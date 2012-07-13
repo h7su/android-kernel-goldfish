@@ -53,7 +53,7 @@ NESTED(handle_sysn32, PT_SIZE, sp)
 
 	sd	a3, PT_R26(sp)		# save a3 for syscall restarting
 
-	li	t1, _TIF_SYSCALL_TRACE | _TIF_SYSCALL_AUDIT
+	li	t1, _TIF_WORK_SYSCALL_ENTRY
 	LONG_L	t0, TI_FLAGS($28)	# syscall tracing enabled?
 	and	t0, t1, t0
 	bnez	t0, n32_syscall_trace_entry
@@ -89,7 +89,10 @@ n32_syscall_trace_entry:
 	SAVE_STATIC
 	move	s0, t2
 	move	a0, sp
+	daddiu	a1, v0, __NR_N32_Linux
 	jal	syscall_trace_enter
+
+	bltz	v0, 2f			# seccomp failed? Skip syscall
 
 	move	t0, s0
 	RESTORE_STATIC
@@ -111,7 +114,7 @@ n32_syscall_trace_entry:
 	sd	t1, PT_R0(sp)		# save it for syscall restarting
 1:	sd	v0, PT_R2(sp)		# result
 
-	j	syscall_exit
+2:	j	syscall_exit
 
 not_n32_scall:
 	/* This is not an n32 compatibility syscall, pass it on to
