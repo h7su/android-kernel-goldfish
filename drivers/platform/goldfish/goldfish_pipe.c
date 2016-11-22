@@ -233,7 +233,7 @@ static ssize_t goldfish_pipe_read_write(struct file *filp, char __user *buffer,
 	struct goldfish_pipe *pipe = filp->private_data;
 	struct goldfish_pipe_dev *dev = pipe->dev;
 	unsigned long address, address_end;
-	struct page* pages[MAX_PAGES_TO_GRAB] = {};
+	struct page *pages[MAX_PAGES_TO_GRAB] = {};
 	int count = 0, ret = -EINVAL;
 
 	/* If the emulator already closed the pipe, no need to go further */
@@ -517,7 +517,7 @@ static irqreturn_t goldfish_pipe_interrupt(int irq, void *dev_id)
 static int goldfish_pipe_open(struct inode *inode, struct file *file)
 {
 	struct goldfish_pipe *pipe;
-	struct goldfish_pipe_dev *dev = pipe_dev;
+	struct goldfish_pipe_dev *dev = goldfish_pipe_dev;
 	int32_t status;
 
 	/* Allocate new pipe kernel object */
@@ -568,7 +568,7 @@ static const struct file_operations goldfish_pipe_fops = {
 	.release = goldfish_pipe_release,
 };
 
-static struct miscdevice goldfish_pipe_dev = {
+static struct miscdevice goldfish_pipe_miscdev = {
 	.minor = MISC_DYNAMIC_MINOR,
 	.name = "goldfish_pipe",
 	.fops = &goldfish_pipe_fops,
@@ -576,7 +576,7 @@ static struct miscdevice goldfish_pipe_dev = {
 
 int goldfish_pipe_device_init_v1(struct platform_device *pdev)
 {
-	struct goldfish_pipe_dev *dev = pipe_dev;
+	struct goldfish_pipe_dev *dev = goldfish_pipe_dev;
 	int err = devm_request_irq(&pdev->dev, dev->irq, goldfish_pipe_interrupt,
 				IRQF_SHARED, "goldfish_pipe", dev);
 	if (err) {
@@ -584,7 +584,7 @@ int goldfish_pipe_device_init_v1(struct platform_device *pdev)
 		return err;
 	}
 
-	err = misc_register(&goldfish_pipe_dev);
+	err = misc_register(&goldfish_pipe_miscdev);
 	if (err) {
 		dev_err(&pdev->dev, "unable to register v1 device\n");
 		return err;
@@ -596,5 +596,5 @@ int goldfish_pipe_device_init_v1(struct platform_device *pdev)
 
 void goldfish_pipe_device_deinit_v1(struct platform_device *pdev)
 {
-    misc_deregister(&goldfish_pipe_dev);
+    misc_deregister(&goldfish_pipe_miscdev);
 }
