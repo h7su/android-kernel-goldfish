@@ -2083,27 +2083,38 @@ static int __init timer_irq_works(void)
 {
 	unsigned long t1 = jiffies;
 	unsigned long flags;
+	unsigned long total_waited = 0;
+	unsigned long wait_interval = (10 * 1000) / HZ;
 
 	if (no_timer_check)
 		return 1;
 
-	local_save_flags(flags);
-	local_irq_enable();
-	/* Let ten ticks pass... */
-	mdelay((10 * 1000) / HZ);
-	local_irq_restore(flags);
+	/* On the emulator, there is no point to proceeding any further
+	 * unless timer_irq_works(). */
 
-	/*
-	 * Expect a few ticks at least, to be sure some possible
-	 * glue logic does not lock up after one or two first
-	 * ticks in a non-ExtINT mode.  Also the local APIC
-	 * might have cached one ExtINT interrupt.  Finally, at
-	 * least one tick may be lost due to delays.
-	 */
+	while (true) {
+		local_save_flags(flags);
+		local_irq_enable();
+		/* Let ten ticks pass... */
+		mdelay(wait_interval);
+		local_irq_restore(flags);
+		total_waited += wait_interval;
 
-	/* jiffies wrap? */
-	if (time_after(jiffies, t1 + 4))
-		return 1;
+		if (total_waited > 10000)
+			BUG();
+
+		/*
+		 * Expect a few ticks at least, to be sure some possible
+		 * glue logic does not lock up after one or two first
+		 * ticks in a non-ExtINT mode.  Also the local APIC
+		 * might have cached one ExtINT interrupt.  Finally, at
+		 * least one tick may be lost due to delays.
+		 */
+
+		/* jiffies wrap? */
+		if (time_after(jiffies, t1 + 4))
+			return 1;
+	}
 	return 0;
 }
 
