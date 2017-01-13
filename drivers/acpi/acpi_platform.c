@@ -54,6 +54,7 @@ static const struct acpi_device_id acpi_platform_device_ids[] = {
 	{ "GFSH0005" },  /* goldfish audio */
 	{ "GFSH0006" },  /* goldfish sync */
 	{ "GFSH0007" },  /* goldfish rtc */
+	{ "GFSH0008" },  /* goldfish rotary */
 
 	{ }
 };
