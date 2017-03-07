@@ -36,7 +36,16 @@ static const __initconst struct hypervisor_x86 * const hypervisors[] =
 	&x86_hyper_xen_hvm,
 #endif
 	&x86_hyper_vmware,
+/*
+ * Exclude hyper-v support with emulator.
+ * Newer Intel HAXM has a bug by wrongly identifying itself as hyper-v,
+ * this leads to a hang with android emulator kernel.
+ * Before Intel fixes this, this could keep our emulator safe.
+ * This only happens when running Intel HAXM on top of hyper-v.
+ */
+#ifndef CONFIG_GOLDFISH
 	&x86_hyper_ms_hyperv,
+#endif
 #ifdef CONFIG_KVM_GUEST
 	&x86_hyper_kvm,
 #endif
