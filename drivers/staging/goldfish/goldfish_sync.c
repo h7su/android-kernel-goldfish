@@ -29,6 +29,7 @@
 #include <linux/mm.h>
 #include <linux/acpi.h>
 
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/syscalls.h>
 
