@@ -26,6 +26,9 @@
 #include <linux/io.h>
 #include <linux/acpi.h>
 
+#define POWER_SUPPLY_CURRENT_UA (900000) /* in uAmp */
+#define POWER_SUPPLY_CHARGE_FULL_UAH (300000) /* in uAmp*H */
+
 struct goldfish_battery_data {
 	void __iomem *reg_base;
 	int irq;
@@ -51,13 +54,16 @@ enum {
 	BATTERY_INT_STATUS	    = 0x00,
 	/* set this to enable IRQ */
 	BATTERY_INT_ENABLE	    = 0x04,
-
 	BATTERY_AC_ONLINE       = 0x08,
 	BATTERY_STATUS          = 0x0C,
 	BATTERY_HEALTH          = 0x10,
 	BATTERY_PRESENT         = 0x14,
 	BATTERY_CAPACITY        = 0x18,
-
+	BATTERY_VOLTAGE         = 0x1C,
+	BATTERY_TEMP            = 0x20,
+	BATTERY_CHARGE_COUNTER  = 0x24,
+	BATTERY_VOLTAGE_MAX     = 0x28,
+	BATTERY_CURRENT_MAX     = 0x2c,
 	BATTERY_STATUS_CHANGED	= 1U << 0,
 	AC_STATUS_CHANGED	= 1U << 1,
 	BATTERY_INT_MASK        = BATTERY_STATUS_CHANGED | AC_STATUS_CHANGED,
@@ -74,6 +80,13 @@ static int goldfish_ac_get_property(struct power_supply *psy,
 	switch (psp) {
 	case POWER_SUPPLY_PROP_ONLINE:
 		val->intval = GOLDFISH_BATTERY_READ(data, BATTERY_AC_ONLINE);
+		break;
+
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+		val->intval = GOLDFISH_BATTERY_READ(data, BATTERY_VOLTAGE_MAX);
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		val->intval = GOLDFISH_BATTERY_READ(data, BATTERY_CURRENT_MAX);
 		break;
 	default:
 		ret = -EINVAL;
@@ -105,6 +118,28 @@ static int goldfish_battery_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CAPACITY:
 		val->intval = GOLDFISH_BATTERY_READ(data, BATTERY_CAPACITY);
 		break;
+	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
+		val->intval = GOLDFISH_BATTERY_READ(data, BATTERY_VOLTAGE);
+		break;
+	case POWER_SUPPLY_PROP_TEMP:
+		val->intval = GOLDFISH_BATTERY_READ(data, BATTERY_TEMP);
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+		val->intval = GOLDFISH_BATTERY_READ(data,
+						    BATTERY_CHARGE_COUNTER);
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_NOW:
+		val->intval = POWER_SUPPLY_CURRENT_UA;
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_AVG:
+		val->intval = POWER_SUPPLY_CURRENT_UA;
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_FULL:
+		val->intval = POWER_SUPPLY_CHARGE_FULL_UAH;
+		break;
+	case POWER_SUPPLY_PROP_CYCLE_COUNT:
+		val->intval = 10;
+		break;
 	default:
 		ret = -EINVAL;
 		break;
@@ -119,10 +154,19 @@ static enum power_supply_property goldfish_battery_props[] = {
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_TECHNOLOGY,
 	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_CURRENT_AVG,
+	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
 };
 
 static enum power_supply_property goldfish_ac_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_VOLTAGE_MAX,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
 };
 
 static irqreturn_t goldfish_battery_interrupt(int irq, void *dev_id)
