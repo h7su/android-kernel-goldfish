@@ -12,4 +12,5 @@ generic-y += segment.h
 generic-y += serial.h
 generic-y += trace_clock.h
 generic-y += preempt.h
+generic-y += user.h
 generic-y += xor.h
