@@ -40,9 +40,9 @@ void prom_free_prom_memory(void)
 }
 
 #ifdef CONFIG_64BIT
-#define GOLDFISH_TTY_PUT_CHAR (*(volatile unsigned int *)0xffffffffbf002000)
+#define GOLDFISH_TTY_PUT_CHAR (*(volatile unsigned int *)0xffffffffbf004000)
 #else
-#define GOLDFISH_TTY_PUT_CHAR (*(volatile unsigned int *)0xbf002000)
+#define GOLDFISH_TTY_PUT_CHAR (*(volatile unsigned int *)0xbf004000)
 #endif
 
 void prom_putchar(int c)
