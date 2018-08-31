@@ -237,7 +237,8 @@ static int transfer_pages(struct goldfish_pipe_dev *dev,
 	return status;
 }
 
-unsigned long translate_address(const struct page *page, unsigned long addr)
+static unsigned long translate_address(const struct page *page,
+				       unsigned long addr)
 {
 	return page_to_phys(page) | (addr & ~PAGE_MASK);
 }
