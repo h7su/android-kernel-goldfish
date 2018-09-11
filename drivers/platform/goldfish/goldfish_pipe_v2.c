@@ -391,8 +391,10 @@ static int transfer_max_buffers(struct goldfish_pipe *pipe,
 	pages_count = pin_user_pages(first_page, last_page,
 				     last_page_size, is_write,
 				     pipe->pages, &iter_last_page_size);
-	if (pages_count < 0)
+	if (pages_count < 0) {
+		mutex_unlock(&pipe->lock);
 		return pages_count;
+	}
 
 	populate_rw_params(pipe->pages, pages_count, address, address_end,
 			   first_page, last_page, iter_last_page_size, is_write,
