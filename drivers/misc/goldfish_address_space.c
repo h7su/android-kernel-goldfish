@@ -485,7 +485,7 @@ MODULE_DEVICE_TABLE(pci, address_space_pci_tbl);
 static int address_space_pci_probe(struct pci_dev *dev,
 				   const struct pci_device_id *id);
 
-void __init fill_pci_driver(struct pci_driver *pci)
+static void __init fill_pci_driver(struct pci_driver *pci)
 {
 	pci->name = ADDRESS_SPACE_PCI_DEVICE_NAME;
 	pci->id_table = address_space_pci_tbl;
