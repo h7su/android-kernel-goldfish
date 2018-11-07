@@ -230,19 +230,19 @@ static void __iomem __must_check *ioremap_pci_bar(struct pci_dev *dev, int bar_i
 	unsigned long end = pci_resource_end(dev, bar_id);
 
 	if (end <= start)
-		return ERR_PTR(-ENXIO);
+		return IOMEM_ERR_PTR(-ENXIO);
 
 	size = end - start;
 	io = ioremap(start, size);
 	if (!io)
-		return ERR_PTR(-ENOMEM);
+		return IOMEM_ERR_PTR(-ENOMEM);
 
 	return io;
 }
 
 static void __must_check *memremap_pci_bar(struct pci_dev *dev, int bar_id, unsigned long flags)
 {
-	void __iomem *mem;
+	void *mem;
 	unsigned long size;
 	unsigned long start = pci_resource_start(dev, bar_id);
 	unsigned long end = pci_resource_end(dev, bar_id);
