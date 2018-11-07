@@ -6,6 +6,7 @@
 #include <linux/wait.h>
 #include <linux/fs.h>
 #include <linux/io.h>
+#include <linux/uaccess.h>
 #include <linux/debugfs.h>
 
 #include <linux/device.h>
@@ -129,10 +130,10 @@ static int address_space_mmap(struct file *filp, struct vm_area_struct *vma)
 	return remap_pfn_range(vma, vma->vm_start, pfn, sz, vma->vm_page_prot);
 }
 
-static long address_space_ioctl_allocate_block_locked(struct address_space_device_state *state,
-						      unsigned long size)
+static long address_space_ioctl_allocate_block_locked_impl(struct address_space_device_state *state,
+							   u64 size, u64 *offset)
 {
-	int res;
+	long res;
 
 	address_space_write_register(state->io_registers,
 				     ADDRESS_SPACE_REGISTER_BLOCK_SIZE_LOW,
@@ -143,34 +144,19 @@ static long address_space_ioctl_allocate_block_locked(struct address_space_devic
 
 	res = address_space_talk_to_hardware(state,
 					     ADDRESS_SPACE_COMMAND_ALLOCATE_BLOCK);
-	if (res) {
-		return res;
-	} else {
-		long offset_low = address_space_read_register(state->io_registers,
-							      ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_LOW);
-		long offset_high = address_space_read_register(state->io_registers,
-							       ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_HIGH);
-
-		return (offset_high << 32) | offset_low;
+	if (!res) {
+		u64 offset_low = address_space_read_register(state->io_registers,
+							     ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_LOW);
+		u64 offset_high = address_space_read_register(state->io_registers,
+							      ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_HIGH);
+		*offset = offset_low | (offset_high << 32);
 	}
-}
 
-static long address_space_ioctl_allocate_block(struct address_space_device_state *state,
-					       unsigned long size)
-{
-	int res;
-
-	if (mutex_lock_interruptible(&state->registers_lock))
-		return -ERESTARTSYS;
-
-	res = address_space_ioctl_allocate_block_locked(state, size);
-
-	mutex_unlock(&state->registers_lock);
 	return res;
 }
 
-static long address_space_ioctl_unallocate_block_locked(struct address_space_device_state *state,
-							unsigned long offset)
+static long address_space_ioctl_unallocate_block_locked_impl(struct address_space_device_state *state,
+							     u64 offset)
 {
 	address_space_write_register(state->io_registers,
 				     ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_LOW,
@@ -183,15 +169,62 @@ static long address_space_ioctl_unallocate_block_locked(struct address_space_dev
 					      ADDRESS_SPACE_COMMAND_DEALLOCATE_BLOCK);
 }
 
-static long address_space_ioctl_unallocate_block(struct address_space_device_state *state,
-						 unsigned long offset)
+static long address_space_ioctl_allocate_block_locked(struct address_space_device_state *state,
+						      void __user *ptr)
 {
-	int res;
+	long res;
+	u64 size;
+	u64 offset;
+
+	if (copy_from_user(&size, ptr, sizeof(size)))
+		return -EFAULT;
+
+	res = address_space_ioctl_allocate_block_locked_impl(state, size, &offset);
+
+	if (!res) {
+		if (copy_to_user(ptr, &offset, sizeof(offset))) {
+			BUG_ON(address_space_ioctl_unallocate_block_locked_impl(state, offset));
+			res = -EFAULT;
+		}
+	}
+
+	return res;
+}
+
+static long address_space_ioctl_unallocate_block_locked(struct address_space_device_state *state,
+							void __user *ptr)
+{
+	u64 offset;
+
+	if (copy_from_user(&offset, ptr, sizeof(offset)))
+		return -EFAULT;
+
+	return address_space_ioctl_unallocate_block_locked_impl(state, offset);
+}
+
+static long address_space_ioctl_allocate_block(struct address_space_device_state *state,
+					       void __user *ptr)
+{
+	long res;
 
 	if (mutex_lock_interruptible(&state->registers_lock))
 		return -ERESTARTSYS;
 
-	res = address_space_ioctl_unallocate_block_locked(state, offset);
+	res = (long)address_space_ioctl_allocate_block_locked(state, ptr);
+
+	mutex_unlock(&state->registers_lock);
+	return res;
+}
+
+static long address_space_ioctl_unallocate_block(struct address_space_device_state *state,
+						 void __user *ptr)
+{
+	long res;
+
+	if (mutex_lock_interruptible(&state->registers_lock))
+		return -ERESTARTSYS;
+
+	res = (long)address_space_ioctl_unallocate_block_locked(state, ptr);
 
 	mutex_unlock(&state->registers_lock);
 	return res;
@@ -203,10 +236,10 @@ static long address_space_ioctl(struct file *filp, unsigned int cmd, unsigned lo
 
 	switch (cmd) {
 	case GOLDFISH_ADDRESS_SPACE_IOCTL_ALLOCATE_BLOCK:
-		return address_space_ioctl_allocate_block(state, arg);
+		return address_space_ioctl_allocate_block(state, (void __user *)arg);
 
 	case GOLDFISH_ADDRESS_SPACE_IOCTL_DEALLOCATE_BLOCK:
-		return address_space_ioctl_unallocate_block(state, arg);
+		return address_space_ioctl_unallocate_block(state, (void __user *)arg);
 
 	default:
 		return -ENOSYS;
