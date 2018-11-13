@@ -173,17 +173,20 @@ static long address_space_ioctl_allocate_block_locked(struct address_space_devic
 						      void __user *ptr)
 {
 	long res;
-	u64 size;
-	u64 offset;
+	struct goldfish_address_space_allocate_block request;
 
-	if (copy_from_user(&size, ptr, sizeof(size)))
+	if (copy_from_user(&request, ptr, sizeof(request)))
 		return -EFAULT;
 
-	res = address_space_ioctl_allocate_block_locked_impl(state, size, &offset);
+	res = address_space_ioctl_allocate_block_locked_impl(state,
+							     request.size,
+							     &request.offset);
 
 	if (!res) {
-		if (copy_to_user(ptr, &offset, sizeof(offset))) {
-			BUG_ON(address_space_ioctl_unallocate_block_locked_impl(state, offset));
+		request.phys_addr = virt_to_phys(state->address_area) + request.offset;
+
+		if (copy_to_user(ptr, &request, sizeof(request))) {
+			BUG_ON(address_space_ioctl_unallocate_block_locked_impl(state, request.offset));
 			res = -EFAULT;
 		}
 	}
