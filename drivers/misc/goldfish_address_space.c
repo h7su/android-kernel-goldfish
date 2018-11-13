@@ -43,6 +43,7 @@ enum address_space_command_id {
 #define ADDRESS_SPACE_MAGIC_U32		(ADDRESS_SPACE_PCI_VENDOR_ID << 16 | ADDRESS_SPACE_PCI_DEVICE_ID)
 #define ADDRESS_SPACE_GOLDFISH_DIR	"goldfish"
 #define ADDRESS_SPACE_USERSPACE_ROOT	"address_space"
+#define ADDRESS_SPACE_ALLOCATED_BLOCKS_INITIAL_CAPACITY 32
 
 enum address_space_pci_bar_id {
 	ADDRESS_SPACE_PCI_CONTROL_BAR_ID = 0,
@@ -52,7 +53,7 @@ enum address_space_pci_bar_id {
 struct address_space_driver_state;
 
 struct address_space_device_state {
-	u32 	magic;
+	u32	magic;
 
 	struct list_head 			node;
 	struct dentry 				*userspace_file;
@@ -72,6 +73,21 @@ struct address_space_driver_state {
 	struct list_head devices;	/* of struct address_space_device_state */
 	struct mutex devices_lock;	/* protects devices */
 	struct pci_driver pci;
+};
+
+struct address_space_block {
+	u64 offset;
+	u64 size;
+};
+
+struct address_space_allocated_blocks {
+	struct address_space_device_state *state;
+
+	/* a dynamic array of allocated blocks */
+	struct address_space_block *blocks;
+	int blocks_size;
+	int blocks_capacity;
+	struct mutex blocks_lock;	/* protects operations with blocks */
 };
 
 static void __iomem *address_space_register_address(void __iomem *base, int offset)
@@ -106,29 +122,6 @@ static int address_space_talk_to_hardware(struct address_space_device_state *sta
 
 	return -address_space_read_register(state->io_registers,
 					    ADDRESS_SPACE_REGISTER_STATUS);
-}
-
-static int address_space_open(struct inode *inode, struct file *filp)
-{
-	struct address_space_device_state *state = inode->i_private;
-
-	filp->private_data = state;
-	return 0;
-}
-
-static int address_space_release(struct inode *inode, struct file *filp)
-{
-	return 0;	/* nothing here */
-}
-
-static int address_space_mmap(struct file *filp, struct vm_area_struct *vma)
-{
-	struct address_space_device_state *state = filp->private_data;
-	size_t sz = PAGE_ALIGN(vma->vm_end - vma->vm_start);
-	unsigned long pfn = (virt_to_phys(state->address_area) >> PAGE_SHIFT) +
-		vma->vm_pgoff;
-
-	return remap_pfn_range(vma, vma->vm_start, pfn, sz, vma->vm_page_prot);
 }
 
 static long address_space_ioctl_allocate_block_locked_impl(struct address_space_device_state *state,
@@ -170,24 +163,253 @@ static long address_space_ioctl_unallocate_block_locked_impl(struct address_spac
 					      ADDRESS_SPACE_COMMAND_DEALLOCATE_BLOCK);
 }
 
-static long address_space_ioctl_allocate_block_locked(struct address_space_device_state *state,
-						      void __user *ptr)
+static int address_space_blocks_grow_capacity(int old_capacity)
+{
+	BUG_ON(old_capacity < 0);
+
+	return old_capacity + old_capacity;
+}
+
+static int address_space_blocks_insert(struct address_space_allocated_blocks *allocated_blocks,
+				       u64 offset,
+				       u64 size)
+{
+	int blocks_size;
+
+	if (mutex_lock_interruptible(&allocated_blocks->blocks_lock))
+		return -ERESTARTSYS;
+
+	blocks_size = allocated_blocks->blocks_size;
+
+	BUG_ON(allocated_blocks->blocks_capacity < 1);
+	BUG_ON(allocated_blocks->blocks_capacity < allocated_blocks->blocks_size);
+	BUG_ON(!allocated_blocks->blocks);
+
+	if (allocated_blocks->blocks_capacity == blocks_size) {
+		int new_capacity = address_space_blocks_grow_capacity(allocated_blocks->blocks_capacity);
+		struct address_space_block *new_blocks =
+			kcalloc(new_capacity,
+				sizeof(allocated_blocks->blocks[0]),
+				GFP_KERNEL);
+
+		if (!new_blocks) {
+			mutex_unlock(&allocated_blocks->blocks_lock);
+			return -ENOMEM;
+		}
+
+		memcpy(new_blocks, allocated_blocks->blocks,
+		       blocks_size * sizeof(allocated_blocks->blocks[0]));
+
+		kfree(allocated_blocks->blocks);
+		allocated_blocks->blocks = new_blocks;
+		allocated_blocks->blocks_capacity = new_capacity;
+	}
+
+	BUG_ON(blocks_size >= allocated_blocks->blocks_capacity);
+
+	allocated_blocks->blocks[blocks_size] =
+		(struct address_space_block){ .offset = offset, .size = size };
+	allocated_blocks->blocks_size = blocks_size + 1;
+
+	mutex_unlock(&allocated_blocks->blocks_lock);
+	return 0;
+}
+
+static int address_space_blocks_remove(struct address_space_allocated_blocks *allocated_blocks,
+				       u64 offset)
+{
+	long res = -ENXIO;
+	struct address_space_block *blocks;
+	int blocks_size;
+	int i;
+
+	if (mutex_lock_interruptible(&allocated_blocks->blocks_lock))
+		return -ERESTARTSYS;
+
+	blocks = allocated_blocks->blocks;
+	BUG_ON(!blocks);
+
+	blocks_size = allocated_blocks->blocks_size;
+	BUG_ON(blocks_size < 0);
+
+	for (i = 0; i < blocks_size; ++i) {
+		if (offset == blocks[i].offset) {
+			int last = blocks_size - 1;
+			if (last > i) {
+				blocks[i] = blocks[last];
+				--allocated_blocks->blocks_size;
+				res = 0;
+				break;
+			}
+		}
+	}
+
+	mutex_unlock(&allocated_blocks->blocks_lock);
+	return res;
+}
+
+static int address_space_blocks_check_if_mine(struct address_space_allocated_blocks *allocated_blocks,
+					      u64 offset,
+					      u64 size)
+{
+	int res = -ENXIO;
+	struct address_space_block *block;
+	int blocks_size;
+
+	if (mutex_lock_interruptible(&allocated_blocks->blocks_lock))
+		return -ERESTARTSYS;
+
+	block = allocated_blocks->blocks;
+	BUG_ON(!block);
+
+	blocks_size = allocated_blocks->blocks_size;
+	BUG_ON(blocks_size < 0);
+
+	for (; blocks_size > 0; --blocks_size, ++block) {
+		if (block->offset == offset) {
+			res = (block->size >= size) ? 0 : -EPERM;
+			break;
+		}
+	}
+
+	mutex_unlock(&allocated_blocks->blocks_lock);
+	return res;
+}
+
+static int address_space_open(struct inode *inode, struct file *filp)
+{
+	struct address_space_allocated_blocks *allocated_blocks;
+
+	allocated_blocks = kzalloc(sizeof(*allocated_blocks), GFP_KERNEL);
+	if (!allocated_blocks)
+		return -ENOMEM;
+
+	allocated_blocks->state = inode->i_private;
+
+	allocated_blocks->blocks =
+		kcalloc(ADDRESS_SPACE_ALLOCATED_BLOCKS_INITIAL_CAPACITY,
+			sizeof(allocated_blocks->blocks[0]),
+			GFP_KERNEL);
+	if (!allocated_blocks->blocks) {
+		kfree(allocated_blocks);
+		return -ENOMEM;
+	}
+
+	allocated_blocks->blocks_size = 0;
+	allocated_blocks->blocks_capacity = ADDRESS_SPACE_ALLOCATED_BLOCKS_INITIAL_CAPACITY;
+	mutex_init(&allocated_blocks->blocks_lock);
+
+	filp->private_data = allocated_blocks;
+	return 0;
+}
+
+static int address_space_release(struct inode *inode, struct file *filp)
+{
+	struct address_space_allocated_blocks *allocated_blocks = filp->private_data;
+	struct address_space_device_state *state;
+	int blocks_size;
+	int i;
+
+	BUG_ON(!allocated_blocks);
+	BUG_ON(!allocated_blocks->state);
+	BUG_ON(!allocated_blocks->blocks);
+	BUG_ON(allocated_blocks->blocks_size < 0);
+
+	state = allocated_blocks->state;
+	blocks_size = allocated_blocks->blocks_size;
+
+	if (mutex_lock_interruptible(&state->registers_lock))
+		return -ERESTARTSYS;
+
+	for (i = 0; i < blocks_size; ++i) {
+		BUG_ON(address_space_ioctl_unallocate_block_locked_impl(state,
+									allocated_blocks->blocks[i].offset));
+	}
+
+	mutex_unlock(&state->registers_lock);
+
+	kfree(allocated_blocks->blocks);
+	kfree(allocated_blocks);
+	return 0;
+}
+
+static int address_space_mmap_impl(struct address_space_device_state *state,
+				   size_t size,
+				   struct vm_area_struct *vma)
+{
+	unsigned long pfn = (virt_to_phys(state->address_area) >> PAGE_SHIFT) +
+		vma->vm_pgoff;
+
+	return remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
+}
+
+static int address_space_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	struct address_space_allocated_blocks *allocated_blocks = filp->private_data;
+	size_t size = PAGE_ALIGN(vma->vm_end - vma->vm_start);
+	int res;
+
+	BUG_ON(!allocated_blocks);
+
+	res = address_space_blocks_check_if_mine(allocated_blocks,
+						 vma->vm_pgoff << PAGE_SHIFT,
+						 size);
+
+	if (res)
+		return res;
+	else
+		return address_space_mmap_impl(allocated_blocks->state, size, vma);
+}
+
+static long address_space_ioctl_allocate_block_impl(struct address_space_device_state *state,
+						    struct goldfish_address_space_allocate_block *request)
 {
 	long res;
+
+	if (mutex_lock_interruptible(&state->registers_lock))
+		return -ERESTARTSYS;
+
+	res = address_space_ioctl_allocate_block_locked_impl(state,
+							     request->size,
+							     &request->offset);
+
+	if (!res) {
+		request->phys_addr =
+			virt_to_phys(state->address_area) + request->offset;
+	}
+
+	mutex_unlock(&state->registers_lock);
+	return res;
+}
+
+static void address_space_ioctl_unallocate_block_impl(struct address_space_device_state *state,
+						      u64 offset)
+{
+	mutex_lock(&state->registers_lock);
+	BUG_ON(address_space_ioctl_unallocate_block_locked_impl(state, offset));
+	mutex_unlock(&state->registers_lock);
+}
+
+static long address_space_ioctl_allocate_block(struct address_space_allocated_blocks *allocated_blocks,
+					       void __user *ptr)
+{
+	long res;
+	struct address_space_device_state *state = allocated_blocks->state;
 	struct goldfish_address_space_allocate_block request;
 
 	if (copy_from_user(&request, ptr, sizeof(request)))
 		return -EFAULT;
 
-	res = address_space_ioctl_allocate_block_locked_impl(state,
-							     request.size,
-							     &request.offset);
-
+	res = (long)address_space_ioctl_allocate_block_impl(state, &request);
 	if (!res) {
-		request.phys_addr = virt_to_phys(state->address_area) + request.offset;
+		res = address_space_blocks_insert(allocated_blocks,
+						  request.offset,
+						  request.size);
 
-		if (copy_to_user(ptr, &request, sizeof(request))) {
-			BUG_ON(address_space_ioctl_unallocate_block_locked_impl(state, request.offset));
+		if (res) {
+			address_space_ioctl_unallocate_block_impl(state, request.offset);
+		} else if (copy_to_user(ptr, &request, sizeof(request))) {
+			address_space_ioctl_unallocate_block_impl(state, request.offset);
 			res = -EFAULT;
 		}
 	}
@@ -195,55 +417,32 @@ static long address_space_ioctl_allocate_block_locked(struct address_space_devic
 	return res;
 }
 
-static long address_space_ioctl_unallocate_block_locked(struct address_space_device_state *state,
-							void __user *ptr)
+static long address_space_ioctl_unallocate_block(struct address_space_allocated_blocks *allocated_blocks,
+						 void __user *ptr)
 {
+	long res;
 	u64 offset;
 
 	if (copy_from_user(&offset, ptr, sizeof(offset)))
 		return -EFAULT;
 
-	return address_space_ioctl_unallocate_block_locked_impl(state, offset);
-}
+	res = address_space_blocks_remove(allocated_blocks, offset);
+	if (!res)
+		address_space_ioctl_unallocate_block_impl(allocated_blocks->state, offset);
 
-static long address_space_ioctl_allocate_block(struct address_space_device_state *state,
-					       void __user *ptr)
-{
-	long res;
-
-	if (mutex_lock_interruptible(&state->registers_lock))
-		return -ERESTARTSYS;
-
-	res = (long)address_space_ioctl_allocate_block_locked(state, ptr);
-
-	mutex_unlock(&state->registers_lock);
-	return res;
-}
-
-static long address_space_ioctl_unallocate_block(struct address_space_device_state *state,
-						 void __user *ptr)
-{
-	long res;
-
-	if (mutex_lock_interruptible(&state->registers_lock))
-		return -ERESTARTSYS;
-
-	res = (long)address_space_ioctl_unallocate_block_locked(state, ptr);
-
-	mutex_unlock(&state->registers_lock);
 	return res;
 }
 
 static long address_space_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct address_space_device_state *state = filp->private_data;
+	struct address_space_allocated_blocks *allocated_blocks = filp->private_data;
 
 	switch (cmd) {
 	case GOLDFISH_ADDRESS_SPACE_IOCTL_ALLOCATE_BLOCK:
-		return address_space_ioctl_allocate_block(state, (void __user *)arg);
+		return address_space_ioctl_allocate_block(allocated_blocks, (void __user *)arg);
 
 	case GOLDFISH_ADDRESS_SPACE_IOCTL_DEALLOCATE_BLOCK:
-		return address_space_ioctl_unallocate_block(state, (void __user *)arg);
+		return address_space_ioctl_unallocate_block(allocated_blocks, (void __user *)arg);
 
 	default:
 		return -ENOSYS;
