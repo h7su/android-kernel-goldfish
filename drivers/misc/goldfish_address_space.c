@@ -25,10 +25,11 @@ MODULE_LICENSE("GPLv2");
 enum address_space_register_id {
 	ADDRESS_SPACE_REGISTER_COMMAND = 0,
 	ADDRESS_SPACE_REGISTER_STATUS = 4,
-	ADDRESS_SPACE_REGISTER_BLOCK_SIZE_LOW = 8,
-	ADDRESS_SPACE_REGISTER_BLOCK_SIZE_HIGH = 12,
-	ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_LOW = 16,
-	ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_HIGH = 20,
+	ADDRESS_SPACE_REGISTER_GUEST_PAGE_SIZE = 8,
+	ADDRESS_SPACE_REGISTER_BLOCK_SIZE_LOW = 12,
+	ADDRESS_SPACE_REGISTER_BLOCK_SIZE_HIGH = 16,
+	ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_LOW = 20,
+	ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_HIGH = 24,
 };
 
 enum address_space_command_id {
@@ -396,6 +397,10 @@ static int __must_check create_address_space_device(struct pci_dev *dev,
 	if (res) {
 		goto out_memunmap;
 	}
+
+	address_space_write_register(state->io_registers,
+				     ADDRESS_SPACE_REGISTER_GUEST_PAGE_SIZE,
+				     PAGE_SIZE);
 
 	state->magic = ADDRESS_SPACE_MAGIC_U32;
 	state->dev = dev;
