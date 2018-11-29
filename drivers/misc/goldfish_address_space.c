@@ -121,25 +121,31 @@ static int address_space_talk_to_hardware(struct address_space_device_state *sta
 }
 
 static long address_space_ioctl_allocate_block_locked_impl(struct address_space_device_state *state,
-							   u64 size, u64 *offset)
+							   u64 *size, u64 *offset)
 {
 	long res;
 
 	address_space_write_register(state->io_registers,
 				     ADDRESS_SPACE_REGISTER_BLOCK_SIZE_LOW,
-				     lower_32_bits(size));
+				     lower_32_bits(*size));
 	address_space_write_register(state->io_registers,
 				     ADDRESS_SPACE_REGISTER_BLOCK_SIZE_HIGH,
-				     upper_32_bits(size));
+				     upper_32_bits(*size));
 
 	res = address_space_talk_to_hardware(state,
 					     ADDRESS_SPACE_COMMAND_ALLOCATE_BLOCK);
 	if (!res) {
-		u64 offset_low = address_space_read_register(state->io_registers,
-							     ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_LOW);
-		u64 offset_high = address_space_read_register(state->io_registers,
-							      ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_HIGH);
-		*offset = offset_low | (offset_high << 32);
+		u64 low = address_space_read_register(state->io_registers,
+						      ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_LOW);
+		u64 high = address_space_read_register(state->io_registers,
+						       ADDRESS_SPACE_REGISTER_BLOCK_OFFSET_HIGH);
+		*offset = low | (high << 32);
+
+		low = address_space_read_register(state->io_registers,
+						  ADDRESS_SPACE_REGISTER_BLOCK_SIZE_LOW);
+		high = address_space_read_register(state->io_registers,
+						   ADDRESS_SPACE_REGISTER_BLOCK_SIZE_HIGH);
+		*size = low | (high << 32);
 	}
 
 	return res;
@@ -369,7 +375,7 @@ static long address_space_ioctl_allocate_block_impl(struct address_space_device_
 		return -ERESTARTSYS;
 
 	res = address_space_ioctl_allocate_block_locked_impl(state,
-							     request->size,
+							     &request->size,
 							     &request->offset);
 
 	if (!res) {
