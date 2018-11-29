@@ -237,12 +237,11 @@ static int address_space_blocks_remove(struct address_space_allocated_blocks *al
 	for (i = 0; i < blocks_size; ++i) {
 		if (offset == blocks[i].offset) {
 			int last = blocks_size - 1;
-			if (last > i) {
+			if (last > i)
 				blocks[i] = blocks[last];
-				--allocated_blocks->blocks_size;
-				res = 0;
-				break;
-			}
+			--allocated_blocks->blocks_size;
+			res = 0;
+			break;
 		}
 	}
 
