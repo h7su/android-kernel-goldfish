@@ -7,7 +7,7 @@
 #include <linux/fs.h>
 #include <linux/io.h>
 #include <linux/uaccess.h>
-#include <linux/debugfs.h>
+#include <linux/miscdevice.h>
 
 #include <linux/device.h>
 #include <linux/pci_regs.h>
@@ -37,12 +37,10 @@ enum address_space_command_id {
 	ADDRESS_SPACE_COMMAND_DEALLOCATE_BLOCK = 2,
 };
 
-#define ADDRESS_SPACE_PCI_DEVICE_NAME	"goldfish_address_space"
+#define ADDRESS_SPACE_DEVICE_NAME	"goldfish_address_space"
 #define ADDRESS_SPACE_PCI_VENDOR_ID	0x607D
 #define ADDRESS_SPACE_PCI_DEVICE_ID	0xF153
 #define ADDRESS_SPACE_MAGIC_U32		(ADDRESS_SPACE_PCI_VENDOR_ID << 16 | ADDRESS_SPACE_PCI_DEVICE_ID)
-#define ADDRESS_SPACE_GOLDFISH_DIR	"goldfish"
-#define ADDRESS_SPACE_USERSPACE_ROOT	"address_space"
 #define ADDRESS_SPACE_ALLOCATED_BLOCKS_INITIAL_CAPACITY 32
 
 enum address_space_pci_bar_id {
@@ -56,7 +54,7 @@ struct address_space_device_state {
 	u32	magic;
 
 	struct list_head 			node;
-	struct dentry 				*userspace_file;
+	struct miscdevice 			miscdevice;
 	struct pci_dev 				*dev;
 	struct address_space_driver_state 	*driver_state;
 
@@ -68,8 +66,6 @@ struct address_space_device_state {
 };
 
 struct address_space_driver_state {
-	struct dentry *goldfish_dir;
-	struct dentry *userspace_root;
 	struct list_head devices;	/* of struct address_space_device_state */
 	struct mutex devices_lock;	/* protects devices */
 	struct pci_driver pci;
@@ -284,7 +280,10 @@ static int address_space_open(struct inode *inode, struct file *filp)
 	if (!allocated_blocks)
 		return -ENOMEM;
 
-	allocated_blocks->state = inode->i_private;
+	allocated_blocks->state =
+		container_of(filp->private_data,
+			     struct address_space_device_state,
+			     miscdevice);
 
 	allocated_blocks->blocks =
 		kcalloc(ADDRESS_SPACE_ALLOCATED_BLOCKS_INITIAL_CAPACITY,
@@ -528,12 +527,20 @@ static irqreturn_t address_space_interrupt(int irq, void *dev_id)
 		? address_space_interrupt_impl(state) : IRQ_NONE;
 }
 
+static void fill_miscdevice(struct miscdevice *miscdev)
+{
+	memset(miscdev, 0, sizeof(*miscdev));
+
+	miscdev->minor = MISC_DYNAMIC_MINOR;
+	miscdev->name = ADDRESS_SPACE_DEVICE_NAME;
+	miscdev->fops = &userspace_file_operations;
+}
+
 static int __must_check create_address_space_device(struct pci_dev *dev,
 						    const struct pci_device_id *id,
 						    struct address_space_driver_state *driver_state)
 {
 	int res;
-	char device_filename[16];
 	struct address_space_device_state *state;
 
 	state = kzalloc(sizeof(*state), GFP_KERNEL);
@@ -562,24 +569,16 @@ static int __must_check create_address_space_device(struct pci_dev *dev,
 		goto out_release_control_bar;
 	}
 
-	snprintf(device_filename, sizeof(device_filename), "%X", id->device);
-
-	state->userspace_file =
-		debugfs_create_file(device_filename,
-				    S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH,
-				    driver_state->userspace_root,
-				    state,
-				    &userspace_file_operations);
-	if (!state->userspace_file) {
-		res = -ENOENT;
+	fill_miscdevice(&state->miscdevice);
+	res = misc_register(&state->miscdevice);
+	if (res)
 		goto out_release_area_bar;
-	}
 
 	state->io_registers = ioremap_pci_bar(dev,
 					      ADDRESS_SPACE_PCI_CONTROL_BAR_ID);
 	if (IS_ERR(state->io_registers)) {
 		res = PTR_ERR(state->io_registers);
-		goto out_debugfs_remove;
+		goto out_misc_deregister;
 	}
 
 	state->address_area = memremap_pci_bar(dev,
@@ -616,8 +615,8 @@ out_memunmap:
 	memunmap(state->address_area);
 out_iounmap:
 	iounmap(state->io_registers);
-out_debugfs_remove:
-	debugfs_remove(state->userspace_file);
+out_misc_deregister:
+	misc_deregister(&state->miscdevice);
 out_release_area_bar:
 	pci_release_region(dev, ADDRESS_SPACE_PCI_AREA_BAR_ID);
 out_release_control_bar:
@@ -634,7 +633,7 @@ static void destroy_address_space_device(struct address_space_device_state *stat
 	free_irq(state->dev->irq, state);
 	memunmap(state->address_area);
 	iounmap(state->io_registers);
-	debugfs_remove(state->userspace_file);
+	misc_deregister(&state->miscdevice);
 	pci_release_region(state->dev, ADDRESS_SPACE_PCI_AREA_BAR_ID);
 	pci_release_region(state->dev, ADDRESS_SPACE_PCI_CONTROL_BAR_ID);
 	kfree(state);
@@ -694,7 +693,7 @@ static int address_space_pci_probe(struct pci_dev *dev,
 
 static void __init fill_pci_driver(struct pci_driver *pci)
 {
-	pci->name = ADDRESS_SPACE_PCI_DEVICE_NAME;
+	pci->name = ADDRESS_SPACE_DEVICE_NAME;
 	pci->id_table = address_space_pci_tbl;
 	pci->probe = &address_space_pci_probe;
 	pci->remove = &address_space_pci_remove;
@@ -703,18 +702,6 @@ static void __init fill_pci_driver(struct pci_driver *pci)
 
 static int __must_check __init init_address_space_impl(struct address_space_driver_state *state)
 {
-	state->goldfish_dir = debugfs_create_dir(ADDRESS_SPACE_GOLDFISH_DIR,
-						 NULL);
-	if (!state->goldfish_dir)
-		return -ENOENT;
-
-	state->userspace_root = debugfs_create_dir(ADDRESS_SPACE_USERSPACE_ROOT,
-						   state->goldfish_dir);
-	if (!state->userspace_root) {
-		debugfs_remove(state->goldfish_dir);
-		return -ENOENT;
-	}
-
 	INIT_LIST_HEAD(&state->devices);
 	mutex_init(&state->devices_lock);
 	fill_pci_driver(&state->pci);
@@ -727,8 +714,6 @@ static void __exit exit_address_space_impl(struct address_space_driver_state *st
 	BUG_ON(!list_empty(&state->devices));
 
 	pci_unregister_driver(&state->pci);
-	debugfs_remove(state->userspace_root);
-	debugfs_remove(state->goldfish_dir);
 }
 
 static struct address_space_driver_state g_driver_state;
