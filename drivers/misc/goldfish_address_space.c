@@ -404,7 +404,7 @@ static long address_space_ioctl_allocate_block(struct address_space_allocated_bl
 	if (copy_from_user(&request, ptr, sizeof(request)))
 		return -EFAULT;
 
-	res = (long)address_space_ioctl_allocate_block_impl(state, &request);
+	res = address_space_ioctl_allocate_block_impl(state, &request);
 	if (!res) {
 		res = address_space_blocks_insert(allocated_blocks,
 						  request.offset,
