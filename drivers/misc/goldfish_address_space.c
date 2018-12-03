@@ -59,7 +59,8 @@ struct address_space_device_state {
 	struct address_space_driver_state 	*driver_state;
 
 	void __iomem 		*io_registers;
-	void			*address_area;	/* the addresses to allocate from */
+	void			*address_area;	/* to clain the address space */
+	unsigned long		address_area_phys_address; /* physical address to allocate from */
 	struct mutex 		registers_lock;	/* protects registers */
 	wait_queue_head_t 	wake_queue;	/* to wait for the hardware */
 	int			hw_done;	/* to say hw is done */
@@ -341,7 +342,7 @@ static int address_space_mmap_impl(struct address_space_device_state *state,
 				   size_t size,
 				   struct vm_area_struct *vma)
 {
-	unsigned long pfn = (virt_to_phys(state->address_area) >> PAGE_SHIFT) +
+	unsigned long pfn = (state->address_area_phys_address >> PAGE_SHIFT) +
 		vma->vm_pgoff;
 
 	return remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
@@ -376,10 +377,9 @@ static long address_space_ioctl_allocate_block_impl(struct address_space_device_
 	res = address_space_ioctl_allocate_block_locked_impl(state,
 							     &request->size,
 							     &request->offset);
-
 	if (!res) {
 		request->phys_addr =
-			virt_to_phys(state->address_area) + request->offset;
+			state->address_area_phys_address + request->offset;
 	}
 
 	mutex_unlock(&state->registers_lock);
@@ -593,6 +593,9 @@ static int __must_check create_address_space_device(struct pci_dev *dev,
 		res = PTR_ERR(state->address_area);
 		goto out_iounmap;
 	}
+
+	state->address_area_phys_address =
+		pci_resource_start(dev, ADDRESS_SPACE_PCI_AREA_BAR_ID);
 
 	res = request_irq(dev->irq,
 			  address_space_interrupt, IRQF_SHARED,
