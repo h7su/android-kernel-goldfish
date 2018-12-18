@@ -223,7 +223,7 @@ as_blocks_insert(struct as_allocated_blocks *allocated_blocks,
 		allocated_blocks->blocks_capacity = new_capacity;
 	}
 
-	BUG_ON(blocks_size >= allocated_blocks->blocks_capacity);
+	WARN_ON(blocks_size >= allocated_blocks->blocks_capacity);
 
 	allocated_blocks->blocks[blocks_size] =
 		(struct as_block){ .offset = offset, .size = size };
@@ -246,10 +246,10 @@ as_blocks_remove(struct as_allocated_blocks *allocated_blocks,
 		return -ERESTARTSYS;
 
 	blocks = allocated_blocks->blocks;
-	BUG_ON(!blocks);
+	WARN_ON(!blocks);
 
 	blocks_size = allocated_blocks->blocks_size;
-	BUG_ON(blocks_size < 0);
+	WARN_ON(blocks_size < 0);
 
 	for (i = 0; i < blocks_size; ++i) {
 		if (offset == blocks[i].offset) {
@@ -281,10 +281,10 @@ as_blocks_check_if_mine(struct as_allocated_blocks *allocated_blocks,
 		return -ERESTARTSYS;
 
 	block = allocated_blocks->blocks;
-	BUG_ON(!block);
+	WARN_ON(!block);
 
 	blocks_size = allocated_blocks->blocks_size;
-	BUG_ON(blocks_size < 0);
+	WARN_ON(blocks_size < 0);
 
 	for (; blocks_size > 0; --blocks_size, ++block) {
 		if (block->offset == offset) {
@@ -378,7 +378,7 @@ static int as_mmap(struct file *filp, struct vm_area_struct *vma)
 	size_t size = PAGE_ALIGN(vma->vm_end - vma->vm_start);
 	int res;
 
-	BUG_ON(!allocated_blocks);
+	WARN_ON(!allocated_blocks);
 
 	res = as_blocks_check_if_mine(allocated_blocks,
 						 vma->vm_pgoff << PAGE_SHIFT,
@@ -549,7 +549,7 @@ as_pci_remove_from_devices(struct as_device_state *state)
 		}
 	}
 
-	BUG();
+	WARN(1, "The device must be in the list.");
 }
 
 static irqreturn_t __must_check
@@ -758,7 +758,7 @@ init_as_impl(struct as_driver_state *state)
 static void __exit
 exit_as_impl(struct as_driver_state *state)
 {
-	BUG_ON(!list_empty(&state->devices));
+	WARN_ON(!list_empty(&state->devices));
 
 	pci_unregister_driver(&state->pci);
 }
