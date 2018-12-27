@@ -17,4 +17,14 @@ config GOLDFISH_PIPE
 	  This is a virtual device to drive the QEMU pipe interface used by
 	  the Goldfish Android Virtual Device.
 
+config GOLDFISH_SYNC
+    tristate "Goldfish AVD Sync Driver"
+    depends on GOLDFISH
+    depends on HAS_IOMEM
+    depends on SW_SYNC
+    depends on SYNC_FILE
+	---help---
+	  Emulated sync fences for the Goldfish Android Virtual Device
+
+
 endif # GOLDFISH
