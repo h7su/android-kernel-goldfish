@@ -36,103 +36,27 @@
 
 #include <uapi/linux/goldfish/goldfish_sync.h>
 
-/**
- * struct sync_pt - sync_pt object
- * @base: base dma_fence object
- * @child_list: sync timeline child's list
- * @active_list: sync timeline active child's list
- */
 struct sync_pt {
-	struct dma_fence base;
-	struct list_head child_list;
-	struct list_head active_list;
+	struct dma_fence base;	/* must be the first field in this struct */
+	struct list_head active_list;	/* see active_list_head below */
 };
 
-/**
- * struct goldfish_sync_timeline - sync object
- * @kref:		reference count on fence.
- * @name:		name of the goldfish_sync_timeline. Useful for debugging
- * @child_list_head:	list of children sync_pts for this
- *			  goldfish_sync_timeline
- * @child_list_lock:	lock protecting @child_list_head and fence.status
- * @active_list_head:	list of active (unsignaled/errored) sync_pts
- */
+struct goldfish_sync_state;
 
 struct goldfish_sync_timeline {
-	struct kref		kref;
-	char			name[32];
+	struct goldfish_sync_state *sync_state;
 
-	/* protected by child_list_lock */
-	u64			context;
-	int			value;
-	struct list_head	child_list_head;
-	spinlock_t		child_list_lock;
-	struct list_head	active_list_head;
-};
-
-struct goldfish_sync_timeline_obj {
-	struct goldfish_sync_timeline *sync_tl;
-
-	u32 current_time;
-
-	/* We need to be careful about when we deallocate
-	 * this |goldfish_sync_timeline_obj| struct.
-	 * In order to ensure proper cleanup, we need to
-	 * consider the triggered host-side wait that may
-	 * still be in flight when the guest close()'s a
-	 * goldfish_sync device's sync context fd (and
-	 * destroys the |sync_tl| field above).
-	 * The host-side wait may raise IRQ
-	 * and tell the kernel to increment the timeline _after_
-	 * the |sync_tl| has already been set to null.
-	 *
-	 * From observations on OpenGL apps and CTS tests, this
-	 * happens at some very low probability upon context
-	 * destruction or process close, but it does happen
-	 * and it needs to be handled properly. Otherwise,
-	 * if we clean up the surrounding |goldfish_sync_timeline_obj|
-	 * too early, any |handle| field of any host->guest command
-	 * might not even point to a null |sync_tl| field,
-	 * but to garbage memory or even a reclaimed |sync_tl|.
-	 * If we do not count such "pending waits" and kfree the object
-	 * immediately upon |goldfish_sync_timeline_destroy|,
-	 * we might get mysterous RCU stalls after running a long
-	 * time because the garbage memory that is being read
-	 * happens to be interpretable as a |spinlock_t| struct
-	 * that is currently in the locked state.
-	 *
-	 * To track when to free the |goldfish_sync_timeline_obj|
-	 * itself, we maintain a kref.
-	 * The kref essentially counts the timeline itself plus
-	 * the number of waits in flight. kref_init/kref_put
-	 * are issued on
-	 * |goldfish_sync_timeline_create|/|goldfish_sync_timeline_destroy|
-	 * and kref_get/kref_put are issued on
-	 * |goldfish_sync_fence_create|/|goldfish_sync_timeline_inc|.
-	 *
-	 * The timeline is destroyed after reference count
-	 * reaches zero, which would happen after
-	 * |goldfish_sync_timeline_destroy| and all pending
-	 * |goldfish_sync_timeline_inc|'s are fulfilled.
-	 *
-	 * NOTE (1): We assume that |fence_create| and
-	 * |timeline_inc| calls are 1:1, otherwise the kref scheme
-	 * will not work. This is a valid assumption as long
-	 * as the host-side virtual device implementation
-	 * does not insert any timeline increments
-	 * that we did not trigger from here.
-	 *
-	 * NOTE (2): The use of kref by itself requires no locks,
-	 * but this does not mean everything works without locks.
-	 * Related timeline operations do require a lock of some sort,
-	 * or at least are not proven to work without it.
-	 * In particualr, we assume that all the operations
-	 * done on the |kref| field above are done in contexts where
-	 * |global_sync_state->mutex_lock| is held. Do not
-	 * remove that lock until everything is proven to work
-	 * without it!!!
+	/* This object is owned by userspace from open() calls and also each
+	 * sync_pt refers to it.
 	 */
-	struct kref kref;
+	struct kref		kref;
+	char			name[32];	/* for debugging */
+
+	u64			context;
+	unsigned int		seqno;
+	/* list of active (unsignaled/errored) sync_pts */
+	struct list_head	active_list_head;
+	spinlock_t		lock;	/* protects the fields above */
 };
 
 /* The above definitions (command codes, register layout, ioctl definitions)
@@ -216,10 +140,7 @@ struct goldfish_sync_state {
 	char __iomem *reg_base;
 	int irq;
 
-	/* Spinlock protects |to_do| / |to_do_end|. */
-	spinlock_t lock;
-
-	/* Used to generate unique names. */
+	/* Used to generate unique names, see goldfish_sync_timeline::name. */
 	u64 id_counter;
 
 	/* |mutex_lock| protects all concurrent access
@@ -230,6 +151,8 @@ struct goldfish_sync_state {
 	/* Buffer holding commands issued from host. */
 	struct goldfish_sync_hostcmd to_do[GOLDFISH_SYNC_MAX_CMDS];
 	u32 to_do_end;
+	/* Protects to_do and to_do_end */
+	spinlock_t to_do_lock;
 
 	/* Buffers for the reading or writing
 	 * of individual commands. The host can directly write
@@ -247,17 +170,10 @@ struct goldfish_sync_state {
 	struct work_struct work_item;
 };
 
-/* The open file (per fops.open) state: */
-struct goldfish_sync_context {
-	struct goldfish_sync_state *sync_state;
-	struct goldfish_sync_timeline_obj *timeline;
-};
-
 static struct goldfish_sync_timeline
 *goldfish_dma_fence_parent(struct dma_fence *fence)
 {
-	return container_of(fence->lock, struct goldfish_sync_timeline,
-			    child_list_lock);
+	return container_of(fence->lock, struct goldfish_sync_timeline, lock);
 }
 
 static struct sync_pt *goldfish_sync_fence_to_sync_pt(struct dma_fence *fence)
@@ -265,128 +181,99 @@ static struct sync_pt *goldfish_sync_fence_to_sync_pt(struct dma_fence *fence)
 	return container_of(fence, struct sync_pt, base);
 }
 
-/**
- * goldfish_sync_timeline_create_internal() - creates a sync object
- * @name:	sync_timeline name
- *
- * Creates a new sync_timeline. Returns the sync_timeline object or NULL in
- * case of error.
- */
+/* sync_state->mutex_lock must be locked. */
 struct goldfish_sync_timeline __must_check
-*goldfish_sync_timeline_create_internal(const char *name)
+*goldfish_sync_timeline_create(struct goldfish_sync_state *sync_state)
 {
-	struct goldfish_sync_timeline *obj;
+	struct goldfish_sync_timeline *tl;
 
-	obj = kzalloc(sizeof(*obj), GFP_KERNEL);
-	if (!obj)
+	tl = kzalloc(sizeof(*tl), GFP_KERNEL);
+	if (!tl)
 		return NULL;
 
-	kref_init(&obj->kref);
-	obj->context = dma_fence_context_alloc(1);
-	strlcpy(obj->name, name, sizeof(obj->name));
-	INIT_LIST_HEAD(&obj->child_list_head);
-	INIT_LIST_HEAD(&obj->active_list_head);
-	spin_lock_init(&obj->child_list_lock);
+	tl->sync_state = sync_state;
+	kref_init(&tl->kref);
+	snprintf(tl->name, sizeof(tl->name),
+		 "%s:%llu", GOLDFISH_SYNC_DEVICE_NAME,
+		 ++sync_state->id_counter);
+	tl->context = dma_fence_context_alloc(1);
+	tl->seqno = 0;
+	INIT_LIST_HEAD(&tl->active_list_head);
+	spin_lock_init(&tl->lock);
 
-	return obj;
+	return tl;
 }
 
-static void goldfish_sync_timeline_free_internal(struct kref *kref)
+static void goldfish_sync_timeline_free(struct kref *kref)
 {
-	struct goldfish_sync_timeline *obj =
+	struct goldfish_sync_timeline *tl =
 		container_of(kref, struct goldfish_sync_timeline, kref);
 
-	kfree(obj);
+	kfree(tl);
 }
 
-static void
-goldfish_sync_timeline_get_internal(struct goldfish_sync_timeline *obj)
+static void goldfish_sync_timeline_get(struct goldfish_sync_timeline *tl)
 {
-	kref_get(&obj->kref);
+	kref_get(&tl->kref);
 }
 
-void goldfish_sync_timeline_put_internal(struct goldfish_sync_timeline *obj)
+void goldfish_sync_timeline_put(struct goldfish_sync_timeline *tl)
 {
-	kref_put(&obj->kref, goldfish_sync_timeline_free_internal);
+	kref_put(&tl->kref, goldfish_sync_timeline_free);
 }
 
-/**
- * goldfish_sync_timeline_signal() -
- * signal a status change on a goldfish_sync_timeline
- * @obj:	sync_timeline to signal
- * @inc:	num to increment on timeline->value
- *
- * A sync implementation should call this any time one of it's fences
- * has signaled or has an error condition.
- */
-void goldfish_sync_timeline_signal_internal(struct goldfish_sync_timeline *obj,
-					    unsigned int inc)
+void goldfish_sync_timeline_signal(struct goldfish_sync_timeline *tl,
+				   unsigned int inc)
 {
 	unsigned long flags;
 	struct sync_pt *pt, *next;
 
-	spin_lock_irqsave(&obj->child_list_lock, flags);
-	obj->value += inc;
-	list_for_each_entry_safe(pt, next, &obj->active_list_head,
-				 active_list) {
+	spin_lock_irqsave(&tl->lock, flags);
+	tl->seqno += inc;
+
+	list_for_each_entry_safe(pt, next, &tl->active_list_head, active_list) {
+		/* dma_fence_is_signaled_locked has side effects */
 		if (dma_fence_is_signaled_locked(&pt->base))
 			list_del_init(&pt->active_list);
 	}
-	spin_unlock_irqrestore(&obj->child_list_lock, flags);
+	spin_unlock_irqrestore(&tl->lock, flags);
 }
 
 static const struct dma_fence_ops goldfish_sync_timeline_fence_ops;
 
-/**
- * goldfish_sync_pt_create_internal() - creates a sync pt
- * @parent:	fence's parent sync_timeline
- * @size:	size to allocate for this pt
- * @inc:	value of the fence
- *
- * Creates a new sync_pt as a child of @parent.  @size bytes will be
- * allocated allowing for implementation specific data to be kept after
- * the generic sync_timeline struct. Returns the sync_pt object or
- * NULL in case of error.
- */
-struct sync_pt __must_check
-*goldfish_sync_pt_create_internal(struct goldfish_sync_timeline *obj,
-				  unsigned int value)
+static struct sync_pt __must_check
+*goldfish_sync_pt_create(struct goldfish_sync_timeline *tl,
+			 unsigned int value)
 {
-	unsigned long flags;
-	struct sync_pt *pt;
+	struct sync_pt *pt = kzalloc(sizeof(*pt), GFP_KERNEL);
 
-	/* leak: no kfree for this kzalloc */
-	pt = kzalloc(sizeof(*pt), GFP_KERNEL);
 	if (!pt)
 		return NULL;
 
-	spin_lock_irqsave(&obj->child_list_lock, flags);
-	goldfish_sync_timeline_get_internal(obj);
 	dma_fence_init(&pt->base,
 		       &goldfish_sync_timeline_fence_ops,
-		       &obj->child_list_lock,
-		       obj->context,
+		       &tl->lock,
+		       tl->context,
 		       value);
-	list_add_tail(&pt->child_list, &obj->child_list_head);
 	INIT_LIST_HEAD(&pt->active_list);
-	spin_unlock_irqrestore(&obj->child_list_lock, flags);
+	goldfish_sync_timeline_get(tl);	/* pt refers to tl */
 
 	return pt;
 }
 
-static void
-goldfish_sync_pt_destroy_internal(struct goldfish_sync_timeline *obj,
-				  struct sync_pt *pt)
+static void goldfish_sync_pt_destroy(struct sync_pt *pt)
 {
+	struct goldfish_sync_timeline *tl =
+		goldfish_dma_fence_parent(&pt->base);
 	unsigned long flags;
 
-	spin_lock_irqsave(&obj->child_list_lock, flags);
-	list_del(&pt->child_list);
-	dma_fence_put(&pt->base);
-	goldfish_sync_timeline_put_internal(obj);
-	spin_unlock_irqrestore(&obj->child_list_lock, flags);
+	spin_lock_irqsave(&tl->lock, flags);
+	if (!list_empty(&pt->active_list))
+		list_del(&pt->active_list);
+	spin_unlock_irqrestore(&tl->lock, flags);
 
-	kfree(pt);
+	goldfish_sync_timeline_put(tl);	/* unref pt from tl */
+	dma_fence_free(&pt->base);
 }
 
 static const char
@@ -398,48 +285,35 @@ static const char
 static const char
 *goldfish_sync_timeline_fence_get_timeline_name(struct dma_fence *fence)
 {
-	struct goldfish_sync_timeline *parent =
-		goldfish_dma_fence_parent(fence);
+	struct goldfish_sync_timeline *tl = goldfish_dma_fence_parent(fence);
 
-	return parent->name;
+	return tl->name;
 }
 
 static void goldfish_sync_timeline_fence_release(struct dma_fence *fence)
 {
-	struct sync_pt *pt = goldfish_sync_fence_to_sync_pt(fence);
-	struct goldfish_sync_timeline *parent =
-		goldfish_dma_fence_parent(fence);
-	unsigned long flags;
-
-	spin_lock_irqsave(fence->lock, flags);
-	list_del(&pt->child_list);
-	if (!list_empty(&pt->active_list))
-		list_del(&pt->active_list);
-	spin_unlock_irqrestore(fence->lock, flags);
-
-	goldfish_sync_timeline_put_internal(parent);
-	dma_fence_free(fence);
+	goldfish_sync_pt_destroy(goldfish_sync_fence_to_sync_pt(fence));
 }
 
 static bool goldfish_sync_timeline_fence_signaled(struct dma_fence *fence)
 {
-	struct goldfish_sync_timeline *parent =
-		goldfish_dma_fence_parent(fence);
+	struct goldfish_sync_timeline *tl = goldfish_dma_fence_parent(fence);
 
-	return (fence->seqno > parent->value) ? false : true;
+	return tl->seqno >= fence->seqno;
 }
 
 static bool
 goldfish_sync_timeline_fence_enable_signaling(struct dma_fence *fence)
 {
-	struct sync_pt *pt = goldfish_sync_fence_to_sync_pt(fence);
-	struct goldfish_sync_timeline *parent =
-		goldfish_dma_fence_parent(fence);
+	struct sync_pt *pt;
+	struct goldfish_sync_timeline *tl;
 
 	if (goldfish_sync_timeline_fence_signaled(fence))
 		return false;
 
-	list_add_tail(&pt->active_list, &parent->active_list_head);
+	pt = goldfish_sync_fence_to_sync_pt(fence);
+	tl = goldfish_dma_fence_parent(fence);
+	list_add_tail(&pt->active_list, &tl->active_list_head);
 	return true;
 }
 
@@ -453,10 +327,9 @@ static void goldfish_sync_timeline_fence_timeline_value_str(
 				struct dma_fence *fence,
 				char *str, int size)
 {
-	struct goldfish_sync_timeline *parent =
-		goldfish_dma_fence_parent(fence);
+	struct goldfish_sync_timeline *tl = goldfish_dma_fence_parent(fence);
 
-	snprintf(str, size, "%d", parent->value);
+	snprintf(str, size, "%d", tl->seqno);
 }
 
 static const struct dma_fence_ops goldfish_sync_timeline_fence_ops = {
@@ -470,129 +343,36 @@ static const struct dma_fence_ops goldfish_sync_timeline_fence_ops = {
 	.timeline_value_str = goldfish_sync_timeline_fence_timeline_value_str,
 };
 
-/* We will call |delete_timeline_obj| when the last reference count
- * of the kref is decremented. This deletes the sync
- * timeline object along with the wrapper itself.
- */
-static void delete_timeline_obj(struct kref *kref)
+static int __must_check
+goldfish_sync_fence_create(struct goldfish_sync_timeline *tl, u32 val)
 {
-	struct goldfish_sync_timeline_obj *obj =
-		container_of(kref, struct goldfish_sync_timeline_obj, kref);
-
-	goldfish_sync_timeline_put_internal(obj->sync_tl);
-	obj->sync_tl = NULL;
-	kfree(obj);
-}
-
-static void gensym(char *buf, size_t size, struct goldfish_sync_state *state)
-{
-	snprintf(buf, size, "goldfish_sync:%s:%llu",
-		 __func__, state->id_counter);
-	++state->id_counter;
-}
-
-/* |goldfish_sync_timeline_create| assumes that |global_sync_state->mutex_lock|
- * is held.
- */
-static struct goldfish_sync_timeline_obj __must_check
-*goldfish_sync_timeline_create(struct goldfish_sync_state *sync_state)
-{
-	char timeline_name[32];
-	struct goldfish_sync_timeline *res_sync_tl = NULL;
-	struct goldfish_sync_timeline_obj *res;
-
-	res = kzalloc(sizeof(*res), GFP_KERNEL);
-	if (!res)
-		return NULL;
-
-	gensym(timeline_name, sizeof(timeline_name), sync_state);
-
-	res_sync_tl = goldfish_sync_timeline_create_internal(timeline_name);
-	if (!res_sync_tl) {
-		kfree(res);
-		return NULL;
-	}
-
-	res->sync_tl = res_sync_tl;
-	res->current_time = 0;
-	kref_init(&res->kref);
-
-	return res;
-}
-
-/* |goldfish_sync_fence_create| assumes that |global_sync_state->mutex_lock|
- * is held.
- */
-static int
-goldfish_sync_fence_create(struct goldfish_sync_timeline_obj *obj, u32 val)
-{
-	int fd;
-	struct sync_pt *syncpt = NULL;
+	struct sync_pt *pt;
 	struct sync_file *sync_file_obj = NULL;
-	struct goldfish_sync_timeline *tl;
+	int fd;
 
-	if (!obj)
-		return -1;
-
-	tl = obj->sync_tl;
-
-	syncpt = goldfish_sync_pt_create_internal(tl, val);
-	if (!syncpt)
+	pt = goldfish_sync_pt_create(tl, val);
+	if (!pt)
 		return -1;
 
 	fd = get_unused_fd_flags(O_CLOEXEC);
 	if (fd < 0)
 		goto err_cleanup_pt;
 
-	sync_file_obj = sync_file_create(&syncpt->base);
+	sync_file_obj = sync_file_create(&pt->base);
 	if (!sync_file_obj)
 		goto err_cleanup_fd_pt;
 
 	fd_install(fd, sync_file_obj->file);
-	kref_get(&obj->kref);
 
+	dma_fence_put(&pt->base);	/* sync_file_obj now owns the fence */
 	return fd;
 
 err_cleanup_fd_pt:
 	put_unused_fd(fd);
-
 err_cleanup_pt:
-	goldfish_sync_pt_destroy_internal(tl, syncpt);
+	goldfish_sync_pt_destroy(pt);
+
 	return -1;
-}
-
-/* |goldfish_sync_timeline_inc| assumes that |global_sync_state->mutex_lock|
- * is held.
- */
-static void
-goldfish_sync_timeline_inc(struct goldfish_sync_timeline_obj *obj, u32 inc)
-{
-	/* Just give up if someone else nuked the timeline.
-	 * Whoever it was won't care that it doesn't get signaled.
-	 */
-	if (!obj)
-		return;
-
-	goldfish_sync_timeline_signal_internal(obj->sync_tl, inc);
-	obj->current_time += inc;
-
-	/* Here, we will end up deleting the timeline object if it
-	 * turns out that this call was a pending increment after
-	 * |goldfish_sync_timeline_destroy| was called.
-	 */
-	kref_put(&obj->kref, delete_timeline_obj);
-}
-
-/* |goldfish_sync_timeline_destroy| assumes
- * that |global_sync_state->mutex_lock| is held.
- */
-static void
-goldfish_sync_timeline_destroy(struct goldfish_sync_timeline_obj *obj)
-{
-	/* See description of |goldfish_sync_timeline_obj| for why we
-	 * should not immediately destroy |obj|
-	 */
-	kref_put(&obj->kref, delete_timeline_obj);
 }
 
 static inline void
@@ -627,7 +407,7 @@ goldfish_sync_hostcmd_reply(struct goldfish_sync_state *sync_state,
 	struct goldfish_sync_hostcmd *batch_hostcmd =
 		&sync_state->batch_hostcmd;
 
-	spin_lock_irqsave(&sync_state->lock, irq_flags);
+	spin_lock_irqsave(&sync_state->to_do_lock, irq_flags);
 
 	batch_hostcmd->cmd = cmd;
 	batch_hostcmd->handle = handle;
@@ -635,7 +415,7 @@ goldfish_sync_hostcmd_reply(struct goldfish_sync_state *sync_state,
 	batch_hostcmd->hostcmd_handle = hostcmd_handle;
 	writel(0, sync_state->reg_base + SYNC_REG_BATCH_COMMAND);
 
-	spin_unlock_irqrestore(&sync_state->lock, irq_flags);
+	spin_unlock_irqrestore(&sync_state->to_do_lock, irq_flags);
 }
 
 static inline void
@@ -649,7 +429,7 @@ goldfish_sync_send_guestcmd(struct goldfish_sync_state *sync_state,
 	struct goldfish_sync_guestcmd *batch_guestcmd =
 		&sync_state->batch_guestcmd;
 
-	spin_lock_irqsave(&sync_state->lock, irq_flags);
+	spin_lock_irqsave(&sync_state->to_do_lock, irq_flags);
 
 	batch_guestcmd->host_command = cmd;
 	batch_guestcmd->glsync_handle = glsync_handle;
@@ -657,7 +437,7 @@ goldfish_sync_send_guestcmd(struct goldfish_sync_state *sync_state,
 	batch_guestcmd->guest_timeline_handle = timeline_handle;
 	writel(0, sync_state->reg_base + SYNC_REG_BATCH_GUESTCOMMAND);
 
-	spin_unlock_irqrestore(&sync_state->lock, irq_flags);
+	spin_unlock_irqrestore(&sync_state->to_do_lock, irq_flags);
 }
 
 /* |goldfish_sync_interrupt| handles IRQ raises from the virtual device.
@@ -677,7 +457,7 @@ goldfish_sync_interrupt_impl(struct goldfish_sync_state *sync_state)
 	struct goldfish_sync_hostcmd *batch_hostcmd =
 			&sync_state->batch_hostcmd;
 
-	spin_lock(&sync_state->lock);
+	spin_lock(&sync_state->to_do_lock);
 	for (;;) {
 		u32 nextcmd;
 		u32 command_r;
@@ -702,7 +482,7 @@ goldfish_sync_interrupt_impl(struct goldfish_sync_state *sync_state)
 					time_r,
 					hostcmd_handle_rw);
 	}
-	spin_unlock(&sync_state->lock);
+	spin_unlock(&sync_state->to_do_lock);
 
 	schedule_work(&sync_state->work_item);
 	return IRQ_HANDLED;
@@ -738,21 +518,22 @@ static irqreturn_t goldfish_sync_interrupt(int irq, void *dev_id)
  * enough display or buffer queues in operation at once
  * to overrun GOLDFISH_SYNC_MAX_CMDS.
  */
-static u32 goldfish_sync_grab_commands(struct goldfish_sync_state *sync_state,
-				       struct goldfish_sync_hostcmd *dst)
+static u32 __must_check
+goldfish_sync_grab_commands(struct goldfish_sync_state *sync_state,
+			    struct goldfish_sync_hostcmd *dst)
 {
 	u32 to_do_end;
 	u32 i;
 	unsigned long irq_flags;
 
-	spin_lock_irqsave(&sync_state->lock, irq_flags);
+	spin_lock_irqsave(&sync_state->to_do_lock, irq_flags);
 
 	to_do_end = sync_state->to_do_end;
 	for (i = 0; i < to_do_end; i++)
 		dst[i] = sync_state->to_do[i];
 	sync_state->to_do_end = 0;
 
-	spin_unlock_irqrestore(&sync_state->lock, irq_flags);
+	spin_unlock_irqrestore(&sync_state->to_do_lock, irq_flags);
 
 	return to_do_end;
 }
@@ -760,8 +541,8 @@ static u32 goldfish_sync_grab_commands(struct goldfish_sync_state *sync_state,
 void goldfish_sync_run_hostcmd(struct goldfish_sync_state *sync_state,
 			       struct goldfish_sync_hostcmd *todo)
 {
-	struct goldfish_sync_timeline_obj *timeline =
-		(struct goldfish_sync_timeline_obj *)(uintptr_t)todo->handle;
+	struct goldfish_sync_timeline *tl =
+		(struct goldfish_sync_timeline *)(uintptr_t)todo->handle;
 	int sync_fence_fd;
 
 	switch (todo->cmd) {
@@ -769,18 +550,18 @@ void goldfish_sync_run_hostcmd(struct goldfish_sync_state *sync_state,
 		break;
 
 	case CMD_CREATE_SYNC_TIMELINE:
-		timeline = goldfish_sync_timeline_create(sync_state);
-		WARN_ON(!timeline);
+		tl = goldfish_sync_timeline_create(sync_state);
+		WARN_ON(!tl);
 		goldfish_sync_hostcmd_reply(sync_state,
 					    CMD_CREATE_SYNC_TIMELINE,
-					    (uintptr_t)timeline,
+					    (uintptr_t)tl,
 					    0,
 					    todo->hostcmd_handle);
 		break;
 
 	case CMD_CREATE_SYNC_FENCE:
-		sync_fence_fd = goldfish_sync_fence_create(timeline,
-							   todo->time_arg);
+		WARN_ON(!tl);
+		sync_fence_fd = goldfish_sync_fence_create(tl, todo->time_arg);
 		goldfish_sync_hostcmd_reply(sync_state,
 					    CMD_CREATE_SYNC_FENCE,
 					    sync_fence_fd,
@@ -789,19 +570,16 @@ void goldfish_sync_run_hostcmd(struct goldfish_sync_state *sync_state,
 		break;
 
 	case CMD_SYNC_TIMELINE_INC:
-		WARN_ON(!timeline);
-		if (timeline)
-			goldfish_sync_timeline_inc(timeline, todo->time_arg);
+		WARN_ON(!tl);
+		goldfish_sync_timeline_signal(tl, todo->time_arg);
 		break;
 
 	case CMD_DESTROY_SYNC_TIMELINE:
-		WARN_ON(!timeline);
-		if (timeline)
-			goldfish_sync_timeline_destroy(timeline);
+		WARN_ON(!tl);
+		goldfish_sync_timeline_put(tl);
 		break;
 	}
 }
-
 
 /* |goldfish_sync_work_item_fn| does the actual work of servicing
  * host->guest sync commands. This function is triggered whenever
@@ -830,56 +608,27 @@ static void goldfish_sync_work_item_fn(struct work_struct *input)
 	mutex_unlock(&sync_state->mutex_lock);
 }
 
-/* Guest-side interface: file operations */
-
-/* Goldfish sync context and ioctl info.
- *
- * When a sync context is created by open()-ing the goldfish sync device, we
- * create a sync context (|goldfish_sync_context|).
- *
- * Currently, the only data required to track is the sync timeline itself
- * along with the current time, which are all packed up in the
- * |goldfish_sync_timeline_obj| field. We use a |goldfish_sync_context|
- * as the filp->private_data.
- *
- * Next, when a sync context user requests that work be queued and a fence
- * fd provided, we use the |goldfish_sync_ioctl_info| struct, which holds
- * information about which host handles to touch for this particular
- * queue-work operation. We need to know about the host-side sync thread
- * and the particular host-side GLsync object. We also possibly write out
- * a file descriptor.
- */
 static int goldfish_sync_open(struct inode *inode, struct file *filp)
 {
-	struct goldfish_sync_context *sync_context =
-		kzalloc(sizeof(*sync_context), GFP_KERNEL);
-
-	if (!sync_context)
-		return -ENOMEM;
-
-	sync_context->sync_state =
+	struct goldfish_sync_state *sync_state =
 		container_of(filp->private_data,
 			     struct goldfish_sync_state,
 			     miscdev);
-	sync_context->timeline = NULL;
 
-	filp->private_data = sync_context;
-	return 0;
-}
+	if (mutex_lock_interruptible(&sync_state->mutex_lock))
+		return -ERESTARTSYS;
 
-static int goldfish_sync_release(struct inode *inode, struct file *file)
-{
-	struct goldfish_sync_context *sync_context = file->private_data;
-	struct goldfish_sync_state *sync_state = sync_context->sync_state;
-
-	mutex_lock(&sync_state->mutex_lock);
-
-	if (sync_context->timeline)
-		goldfish_sync_timeline_destroy(sync_context->timeline);
-
+	filp->private_data = goldfish_sync_timeline_create(sync_state);
 	mutex_unlock(&sync_state->mutex_lock);
 
-	kfree(sync_context);
+	return filp->private_data ? 0 : -ENOMEM;
+}
+
+static int goldfish_sync_release(struct inode *inode, struct file *filp)
+{
+	struct goldfish_sync_timeline *tl = filp->private_data;
+
+	goldfish_sync_timeline_put(tl);
 	return 0;
 }
 
@@ -888,13 +637,11 @@ static int goldfish_sync_release(struct inode *inode, struct file *file)
  * actual work of waiting for the EGL sync command to complete,
  * possibly returning a fence fd to the guest.
  */
-static long goldfish_sync_ioctl(struct file *file,
-				unsigned int cmd,
-				unsigned long arg)
+static long
+goldfish_sync_ioctl_locked(struct goldfish_sync_timeline *tl,
+			   unsigned int cmd,
+			   unsigned long arg)
 {
-	struct goldfish_sync_context *sync_context = file->private_data;
-	struct goldfish_sync_state *sync_state = sync_context->sync_state;
-	struct goldfish_sync_timeline_obj *timeline;
 	struct goldfish_sync_ioctl_info ioctl_data;
 	int fd_out = -1;
 
@@ -908,50 +655,46 @@ static long goldfish_sync_ioctl(struct file *file,
 		if (!ioctl_data.host_syncthread_handle_in)
 			return -EFAULT;
 
-		if (mutex_lock_interruptible(&sync_state->mutex_lock))
-			return -ERESTARTSYS;
-
-		if (!sync_context->timeline)
-			sync_context->timeline =
-				goldfish_sync_timeline_create(sync_state);
-
-		if (!sync_context->timeline) {
-			mutex_unlock(&sync_state->mutex_lock);
-			return -ENOMEM;
-		}
-
-		timeline = sync_context->timeline;
-		fd_out = goldfish_sync_fence_create(timeline,
-						    timeline->current_time + 1);
+		fd_out = goldfish_sync_fence_create(tl, tl->seqno + 1);
 		ioctl_data.fence_fd_out = fd_out;
 
 		if (copy_to_user((void __user *)arg,
-						&ioctl_data,
-						sizeof(ioctl_data))) {
+				 &ioctl_data,
+				 sizeof(ioctl_data))) {
 			sys_close(fd_out);
-
-			/* We won't be doing an increment, kref_put immediately.
-			 */
-			kref_put(&timeline->kref, delete_timeline_obj);
-			mutex_unlock(&sync_state->mutex_lock);
 			return -EFAULT;
 		}
 
 		/* We are now about to trigger a host-side wait;
 		 * accumulate on |pending_waits|.
 		 */
-		goldfish_sync_send_guestcmd(sync_state,
+		goldfish_sync_send_guestcmd(tl->sync_state,
 				CMD_TRIGGER_HOST_WAIT,
 				ioctl_data.host_glsync_handle_in,
 				ioctl_data.host_syncthread_handle_in,
-				(u64)(uintptr_t)(sync_context->timeline));
-
-		mutex_unlock(&sync_state->mutex_lock);
+				(u64)(uintptr_t)tl);
 		return 0;
 
 	default:
 		return -ENOTTY;
 	}
+}
+
+static long goldfish_sync_ioctl(struct file *filp,
+				unsigned int cmd,
+				unsigned long arg)
+{
+	struct goldfish_sync_timeline *tl = filp->private_data;
+	struct goldfish_sync_state *x = tl->sync_state;
+	long res;
+
+	if (mutex_lock_interruptible(&x->mutex_lock))
+		return -ERESTARTSYS;
+
+	res = goldfish_sync_ioctl_locked(tl, cmd, arg);
+	mutex_unlock(&x->mutex_lock);
+
+	return res;
 }
 
 static bool setup_verify_batch_cmd_addr(char *reg_base,
@@ -1001,7 +744,7 @@ static int goldfish_sync_probe(struct platform_device *pdev)
 	if (!sync_state)
 		return -ENOMEM;
 
-	spin_lock_init(&sync_state->lock);
+	spin_lock_init(&sync_state->to_do_lock);
 	mutex_init(&sync_state->mutex_lock);
 	INIT_WORK(&sync_state->work_item, goldfish_sync_work_item_fn);
 
