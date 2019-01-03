@@ -111,14 +111,11 @@ static u32 as_read_register(void __iomem *registers, int offset)
 }
 
 static int
-as_talk_to_hardware(struct as_device_state *state,
-			       enum as_command_id cmd)
+as_talk_to_hardware(struct as_device_state *state, enum as_command_id cmd)
 {
 	state->hw_done = 0;
 
-	as_write_register(state->io_registers,
-			  AS_REGISTER_COMMAND,
-			  cmd);
+	as_write_register(state->io_registers, AS_REGISTER_COMMAND, cmd);
 
 	while (!state->hw_done) {
 		if (wait_event_interruptible(state->wake_queue,
@@ -127,24 +124,24 @@ as_talk_to_hardware(struct as_device_state *state,
 	}
 
 	return -as_read_register(state->io_registers,
-					    AS_REGISTER_STATUS);
+				 AS_REGISTER_STATUS);
 }
 
 static long
 as_ioctl_allocate_block_locked_impl(struct as_device_state *state,
-					       u64 *size, u64 *offset)
+				    u64 *size, u64 *offset)
 {
 	long res;
 
 	as_write_register(state->io_registers,
-				     AS_REGISTER_BLOCK_SIZE_LOW,
-				     lower_32_bits(*size));
+			  AS_REGISTER_BLOCK_SIZE_LOW,
+			  lower_32_bits(*size));
 	as_write_register(state->io_registers,
-				     AS_REGISTER_BLOCK_SIZE_HIGH,
-				     upper_32_bits(*size));
+			  AS_REGISTER_BLOCK_SIZE_HIGH,
+			  upper_32_bits(*size));
 
 	res = as_talk_to_hardware(state,
-					     AS_COMMAND_ALLOCATE_BLOCK);
+				  AS_COMMAND_ALLOCATE_BLOCK);
 	if (!res) {
 		u64 low = as_read_register(state->io_registers,
 					   AS_REGISTER_BLOCK_OFFSET_LOW);
@@ -153,9 +150,9 @@ as_ioctl_allocate_block_locked_impl(struct as_device_state *state,
 		*offset = low | (high << 32);
 
 		low = as_read_register(state->io_registers,
-						  AS_REGISTER_BLOCK_SIZE_LOW);
+				       AS_REGISTER_BLOCK_SIZE_LOW);
 		high = as_read_register(state->io_registers,
-						   AS_REGISTER_BLOCK_SIZE_HIGH);
+					AS_REGISTER_BLOCK_SIZE_HIGH);
 		*size = low | (high << 32);
 	}
 
@@ -163,18 +160,16 @@ as_ioctl_allocate_block_locked_impl(struct as_device_state *state,
 }
 
 static long
-as_ioctl_unallocate_block_locked_impl(struct as_device_state *state,
-						 u64 offset)
+as_ioctl_unallocate_block_locked_impl(struct as_device_state *state, u64 offset)
 {
 	as_write_register(state->io_registers,
-				     AS_REGISTER_BLOCK_OFFSET_LOW,
-				     lower_32_bits(offset));
+			  AS_REGISTER_BLOCK_OFFSET_LOW,
+			  lower_32_bits(offset));
 	as_write_register(state->io_registers,
-				     AS_REGISTER_BLOCK_OFFSET_HIGH,
-				     upper_32_bits(offset));
+			  AS_REGISTER_BLOCK_OFFSET_HIGH,
+			  upper_32_bits(offset));
 
-	return as_talk_to_hardware(state,
-					      AS_COMMAND_DEALLOCATE_BLOCK);
+	return as_talk_to_hardware(state, AS_COMMAND_DEALLOCATE_BLOCK);
 }
 
 static int as_blocks_grow_capacity(int old_capacity)
@@ -234,8 +229,7 @@ as_blocks_insert(struct as_allocated_blocks *allocated_blocks,
 }
 
 static int
-as_blocks_remove(struct as_allocated_blocks *allocated_blocks,
-			    u64 offset)
+as_blocks_remove(struct as_allocated_blocks *allocated_blocks, u64 offset)
 {
 	long res = -ENXIO;
 	struct as_block *blocks;
@@ -270,8 +264,8 @@ as_blocks_remove(struct as_allocated_blocks *allocated_blocks,
 
 static int
 as_blocks_check_if_mine(struct as_allocated_blocks *allocated_blocks,
-				   u64 offset,
-				   u64 size)
+			u64 offset,
+			u64 size)
 {
 	int res = -ENXIO;
 	struct as_block *block;
@@ -359,8 +353,8 @@ static int as_release(struct inode *inode, struct file *filp)
 }
 
 static int as_mmap_impl(struct as_device_state *state,
-				   size_t size,
-				   struct vm_area_struct *vma)
+			size_t size,
+			struct vm_area_struct *vma)
 {
 	unsigned long pfn = (state->address_area_phys_address >> PAGE_SHIFT) +
 		vma->vm_pgoff;
@@ -381,8 +375,8 @@ static int as_mmap(struct file *filp, struct vm_area_struct *vma)
 	WARN_ON(!allocated_blocks);
 
 	res = as_blocks_check_if_mine(allocated_blocks,
-						 vma->vm_pgoff << PAGE_SHIFT,
-						 size);
+				      vma->vm_pgoff << PAGE_SHIFT,
+				      size);
 
 	if (res)
 		return res;
@@ -412,8 +406,7 @@ static long as_ioctl_allocate_block_impl(
 }
 
 static void
-as_ioctl_unallocate_block_impl(struct as_device_state *state,
-					  u64 offset)
+as_ioctl_unallocate_block_impl(struct as_device_state *state, u64 offset)
 {
 	mutex_lock(&state->registers_lock);
 	WARN_ON(as_ioctl_unallocate_block_locked_impl(state, offset));
@@ -422,7 +415,7 @@ as_ioctl_unallocate_block_impl(struct as_device_state *state,
 
 static long
 as_ioctl_allocate_block(struct as_allocated_blocks *allocated_blocks,
-				   void __user *ptr)
+			void __user *ptr)
 {
 	long res;
 	struct as_device_state *state = allocated_blocks->state;
@@ -434,8 +427,8 @@ as_ioctl_allocate_block(struct as_allocated_blocks *allocated_blocks,
 	res = as_ioctl_allocate_block_impl(state, &request);
 	if (!res) {
 		res = as_blocks_insert(allocated_blocks,
-						  request.offset,
-						  request.size);
+				       request.offset,
+				       request.size);
 
 		if (res) {
 			as_ioctl_unallocate_block_impl(state, request.offset);
@@ -450,7 +443,7 @@ as_ioctl_allocate_block(struct as_allocated_blocks *allocated_blocks,
 
 static long
 as_ioctl_unallocate_block(struct as_allocated_blocks *allocated_blocks,
-				     void __user *ptr)
+			  void __user *ptr)
 {
 	long res;
 	u64 offset;
@@ -465,8 +458,7 @@ as_ioctl_unallocate_block(struct as_allocated_blocks *allocated_blocks,
 	return res;
 }
 
-static long as_ioctl(struct file *filp,
-				unsigned int cmd, unsigned long arg)
+static long as_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct as_allocated_blocks *allocated_blocks = filp->private_data;
 
@@ -579,8 +571,8 @@ static void fill_miscdevice(struct miscdevice *miscdev)
 
 static int __must_check
 create_as_device(struct pci_dev *dev,
-			    const struct pci_device_id *id,
-			    struct as_driver_state *driver_state)
+		 const struct pci_device_id *id,
+		 struct as_driver_state *driver_state)
 {
 	int res;
 	struct as_device_state *state;
@@ -641,8 +633,8 @@ create_as_device(struct pci_dev *dev,
 		goto out_memunmap;
 
 	as_write_register(state->io_registers,
-				     AS_REGISTER_GUEST_PAGE_SIZE,
-				     PAGE_SIZE);
+			  AS_REGISTER_GUEST_PAGE_SIZE,
+			  PAGE_SIZE);
 
 	state->magic = AS_MAGIC_U32;
 	state->dev = dev;
@@ -686,8 +678,8 @@ destroy_as_device(struct as_device_state *state)
 
 static int __must_check
 as_pci_probe_impl(struct pci_dev *dev,
-			     const struct pci_device_id *id,
-			     struct as_driver_state *driver_state)
+		  const struct pci_device_id *id,
+		  struct as_driver_state *driver_state)
 {
 	int res;
 	u8 hardware_revision;
@@ -733,8 +725,7 @@ static const struct pci_device_id as_pci_tbl[] = {
 };
 MODULE_DEVICE_TABLE(pci, as_pci_tbl);
 
-static int as_pci_probe(struct pci_dev *dev,
-				   const struct pci_device_id *id);
+static int as_pci_probe(struct pci_dev *dev, const struct pci_device_id *id);
 
 static void __init fill_pci_driver(struct pci_driver *pci)
 {
@@ -765,8 +756,7 @@ exit_as_impl(struct as_driver_state *state)
 
 static struct as_driver_state g_driver_state;
 
-static int as_pci_probe(struct pci_dev *dev,
-				   const struct pci_device_id *id)
+static int as_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	return as_pci_probe_impl(dev, id, &g_driver_state);
 }
