@@ -60,7 +60,7 @@ struct as_device_state {
 
 	void __iomem		*io_registers;
 
-	void			*address_area;	/* to clain the address space */
+	void			*address_area;	/* to claim the address space */
 
 	/* physical address to allocate from */
 	unsigned long		address_area_phys_address;
