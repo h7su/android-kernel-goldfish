@@ -114,15 +114,8 @@ static int
 as_talk_to_hardware(struct as_device_state *state, enum as_command_id cmd)
 {
 	state->hw_done = 0;
-
 	as_write_register(state->io_registers, AS_REGISTER_COMMAND, cmd);
-
-	while (!state->hw_done) {
-		if (wait_event_interruptible(state->wake_queue,
-			state->hw_done))
-			return -ERESTARTSYS;
-	}
-
+	wait_event(state->wake_queue, state->hw_done);
 	return -as_read_register(state->io_registers,
 				 AS_REGISTER_STATUS);
 }
