@@ -257,7 +257,8 @@ as_blocks_check_if_mine(struct as_allocated_blocks *allocated_blocks,
 			u64 offset,
 			u64 size)
 {
-	int res = -ENXIO;
+	const u64 end = offset + size;
+	int res = -EPERM;
 	struct as_block *block;
 	int blocks_size;
 
@@ -271,8 +272,11 @@ as_blocks_check_if_mine(struct as_allocated_blocks *allocated_blocks,
 	WARN_ON(blocks_size < 0);
 
 	for (; blocks_size > 0; --blocks_size, ++block) {
-		if (block->offset == offset) {
-			res = (block->size >= size) ? 0 : -EPERM;
+		u64 block_offset = block->offset;
+		u64 block_end = block_offset + block->size;
+
+		if (offset >= block_offset && end <= block_end) {
+			res = 0;
 			break;
 		}
 	}
