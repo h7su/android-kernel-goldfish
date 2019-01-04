@@ -508,8 +508,7 @@ static void __must_check *memremap_pci_bar(struct pci_dev *dev,
 	return mem;
 }
 
-static void
-as_pci_remove_from_devices(struct as_device_state *state)
+static void as_pci_clear_device(struct as_device_state *state)
 {
 	struct as_driver_state *driver_state = state->driver_state;
 
@@ -517,8 +516,7 @@ as_pci_remove_from_devices(struct as_device_state *state)
 	driver_state->device_state = NULL;
 }
 
-static irqreturn_t __must_check
-as_interrupt_impl(struct as_device_state *state)
+static irqreturn_t __must_check as_interrupt_impl(struct as_device_state *state)
 {
 	state->hw_done = 1;
 	wake_up_interruptible(&state->wake_queue);
@@ -636,10 +634,9 @@ out_free_device_state:
 	return res;
 }
 
-static void
-destroy_as_device(struct as_device_state *state)
+static void as_pci_destroy_device(struct as_device_state *state)
 {
-	as_pci_remove_from_devices(state);
+	as_pci_clear_device(state);
 	free_irq(state->dev->irq, state);
 	memunmap(state->address_area);
 	iounmap(state->io_registers);
@@ -687,13 +684,12 @@ static void as_pci_remove(struct pci_dev *dev)
 {
 	struct as_device_state *state = pci_get_drvdata(dev);
 
-	destroy_as_device(state);
+	as_pci_destroy_device(state);
 	pci_disable_device(dev);
 }
 
 static const struct pci_device_id as_pci_tbl[] = {
-	{ PCI_DEVICE(AS_PCI_VENDOR_ID,
-		     AS_PCI_DEVICE_ID), },
+	{ PCI_DEVICE(AS_PCI_VENDOR_ID, AS_PCI_DEVICE_ID), },
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, as_pci_tbl);
@@ -709,8 +705,7 @@ static void __init fill_pci_driver(struct pci_driver *pci)
 	pci->shutdown = &as_pci_remove;
 }
 
-static int __must_check __init
-init_as_impl(struct as_driver_state *state)
+static int __must_check __init init_as_impl(struct as_driver_state *state)
 {
 	state->device_state = NULL;
 	fill_pci_driver(&state->pci);
@@ -718,8 +713,7 @@ init_as_impl(struct as_driver_state *state)
 	return pci_register_driver(&state->pci);
 }
 
-static void __exit
-exit_as_impl(struct as_driver_state *state)
+static void __exit exit_as_impl(struct as_driver_state *state)
 {
 	WARN_ON(state->device_state);
 
