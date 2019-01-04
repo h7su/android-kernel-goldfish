@@ -52,7 +52,6 @@ struct as_driver_state;
 struct as_device_state {
 	u32	magic;
 
-	struct list_head	node;
 	struct miscdevice	miscdevice;
 	struct pci_dev		*dev;
 	struct as_driver_state	*driver_state;
@@ -72,8 +71,7 @@ struct as_device_state {
 };
 
 struct as_driver_state {
-	struct list_head devices;	/* of struct as_device_state */
-	struct mutex devices_lock;	/* protects devices */
+	struct as_device_state *device_state;
 	struct pci_driver pci;
 };
 
@@ -513,21 +511,10 @@ static void __must_check *memremap_pci_bar(struct pci_dev *dev,
 static void
 as_pci_remove_from_devices(struct as_device_state *state)
 {
-	struct list_head *i;
+	struct as_driver_state *driver_state = state->driver_state;
 
-	mutex_lock(&state->driver_state->devices_lock);
-
-	list_for_each(i, &state->driver_state->devices) {
-		struct as_device_state *si =
-			list_entry(i, struct as_device_state, node);
-		if (state == si) {
-			list_del(i);
-			mutex_unlock(&state->driver_state->devices_lock);
-			return;
-		}
-	}
-
-	WARN(1, "The device must be in the list.");
+	WARN_ON(!driver_state->device_state);
+	driver_state->device_state = NULL;
 }
 
 static irqreturn_t __must_check
@@ -628,7 +615,7 @@ create_as_device(struct pci_dev *dev,
 	mutex_init(&state->registers_lock);
 	init_waitqueue_head(&state->wake_queue);
 
-	list_add(&state->node, &driver_state->devices);
+	driver_state->device_state = state;
 
 	pci_set_drvdata(dev, state);
 	return 0;
@@ -725,8 +712,7 @@ static void __init fill_pci_driver(struct pci_driver *pci)
 static int __must_check __init
 init_as_impl(struct as_driver_state *state)
 {
-	INIT_LIST_HEAD(&state->devices);
-	mutex_init(&state->devices_lock);
+	state->device_state = NULL;
 	fill_pci_driver(&state->pci);
 
 	return pci_register_driver(&state->pci);
@@ -735,7 +721,7 @@ init_as_impl(struct as_driver_state *state)
 static void __exit
 exit_as_impl(struct as_driver_state *state)
 {
-	WARN_ON(!list_empty(&state->devices));
+	WARN_ON(state->device_state);
 
 	pci_unregister_driver(&state->pci);
 }
