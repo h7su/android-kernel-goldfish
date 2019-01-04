@@ -4,6 +4,8 @@
 
 #include <linux/types.h>
 
+#define GOLDFISH_ADDRESS_SPACE_DEVICE_NAME	"goldfish_address_space"
+
 struct goldfish_address_space_allocate_block {
 	__u64 size;
 	__u64 offset;

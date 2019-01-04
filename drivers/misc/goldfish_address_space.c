@@ -37,7 +37,6 @@ enum as_command_id {
 	AS_COMMAND_DEALLOCATE_BLOCK = 2,
 };
 
-#define AS_DEVICE_NAME		"goldfish_address_space"
 #define AS_PCI_VENDOR_ID	0x607D
 #define AS_PCI_DEVICE_ID	0xF153
 #define AS_MAGIC_U32		(AS_PCI_VENDOR_ID << 16 | AS_PCI_DEVICE_ID)
@@ -552,7 +551,7 @@ static void fill_miscdevice(struct miscdevice *miscdev)
 	memset(miscdev, 0, sizeof(*miscdev));
 
 	miscdev->minor = MISC_DYNAMIC_MINOR;
-	miscdev->name = AS_DEVICE_NAME;
+	miscdev->name = GOLDFISH_ADDRESS_SPACE_DEVICE_NAME;
 	miscdev->fops = &userspace_file_operations;
 }
 
@@ -716,7 +715,7 @@ static int as_pci_probe(struct pci_dev *dev, const struct pci_device_id *id);
 
 static void __init fill_pci_driver(struct pci_driver *pci)
 {
-	pci->name = AS_DEVICE_NAME;
+	pci->name = GOLDFISH_ADDRESS_SPACE_DEVICE_NAME;
 	pci->id_table = as_pci_tbl;
 	pci->probe = &as_pci_probe;
 	pci->remove = &as_pci_remove;
