@@ -101,6 +101,8 @@ struct as_file_state {
 static void __iomem *as_register_address(void __iomem *base,
 					 int offset)
 {
+	WARN_ON(!base);
+
 	return ((char __iomem *)base) + offset;
 }
 
@@ -118,6 +120,8 @@ static u32 as_read_register(void __iomem *registers, int offset)
 
 static int as_run_command(struct as_device_state *state, enum as_command_id cmd)
 {
+	WARN_ON(!state);
+
 	as_write_register(state->io_registers, AS_REGISTER_COMMAND, cmd);
 	return -as_read_register(state->io_registers, AS_REGISTER_STATUS);
 }
@@ -349,7 +353,7 @@ static int as_open(struct inode *inode, struct file *filp)
 	AS_DPRINT("Acq regs lock");
 	mutex_lock(&device_state->registers_lock);
 	AS_DPRINT("Got regs lock, gen handle");
-	as_run_command(device_state->io_registers, AS_COMMAND_GEN_HANDLE);
+	as_run_command(device_state, AS_COMMAND_GEN_HANDLE);
 	file_state->handle = as_read_register(
 		device_state->io_registers,
 		AS_REGISTER_HANDLE);
@@ -377,8 +381,7 @@ static int as_open(struct inode *inode, struct file *filp)
 		AS_REGISTER_PING_INFO_ADDR_HIGH,
 		upper_32_bits(ping_info_phys));
 	AS_DPRINT("Do tell ping info addr");
-	as_run_command(device_state->io_registers,
-		       AS_COMMAND_TELL_PING_INFO_ADDR);
+	as_run_command(device_state, AS_COMMAND_TELL_PING_INFO_ADDR);
 	ping_info_phys_returned =
 		((u64)as_read_register(device_state->io_registers,
 				       AS_REGISTER_PING_INFO_ADDR_LOW)) |
@@ -432,7 +435,7 @@ static int as_release(struct inode *inode, struct file *filp)
 
 	as_write_register(state->io_registers, AS_REGISTER_HANDLE,
 			  file_state->handle);
-	as_run_command(state->io_registers, AS_COMMAND_DESTROY_HANDLE);
+	as_run_command(state, AS_COMMAND_DESTROY_HANDLE);
 
 	for (i = 0; i < blocks_size; ++i) {
 		WARN_ON(as_ioctl_unallocate_block_locked_impl(
