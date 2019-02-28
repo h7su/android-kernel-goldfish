@@ -567,8 +567,12 @@ as_ioctl_ping_impl(struct goldfish_address_space_ping *ping_info,
 		   u32 handle,
 		   void __user *ptr)
 {
-	if (copy_from_user(ping_info, ptr, sizeof(*ping_info)))
+	struct goldfish_address_space_ping user_copy;
+
+	if (copy_from_user(&user_copy, ptr, sizeof(user_copy)))
 		return -EFAULT;
+
+	*ping_info = user_copy;
 
 	// Convert to phys addrs
 	ping_info->offset += state->address_area_phys_address;
@@ -578,7 +582,8 @@ as_ioctl_ping_impl(struct goldfish_address_space_ping *ping_info,
 	as_ping_impl(state, handle);
 	mutex_unlock(&state->registers_lock);
 
-	if (copy_to_user(ptr, ping_info, sizeof(*ping_info)))
+	user_copy.metadata = ping_info->metadata;
+	if (copy_to_user(ptr, &user_copy, sizeof(user_copy)))
 		return -EFAULT;
 
 	return 0;
