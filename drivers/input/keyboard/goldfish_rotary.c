@@ -192,7 +192,6 @@ MODULE_DEVICE_TABLE(acpi, goldfish_rotary_acpi_match);
 static struct platform_driver rotary_driver = {
 	.probe	= rotary_probe,
 	.driver	= {
-		.owner	= THIS_MODULE,
 		.name	= "goldfish_rotary",
 		.of_match_table = goldfish_rotary_of_match,
 		.acpi_match_table = ACPI_PTR(goldfish_rotary_acpi_match),
