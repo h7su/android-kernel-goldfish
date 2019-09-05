@@ -338,6 +338,7 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 	int retval = 0;
 #ifdef CONFIG_NET
 	struct uevent_sock *ue_sk;
+	u32 dst_nl_group = 0;
 #endif
 
 	/*
@@ -465,6 +466,9 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 	}
 
 #if defined(CONFIG_NET)
+	dst_nl_group =
+		(strcmp(subsystem, "power_supply") == 0) ? (1u << 16) : 0;
+
 	/* send netlink message */
 	list_for_each_entry(ue_sk, &uevent_sock_list, list) {
 		struct sock *uevent_sock = ue_sk->sk;
@@ -493,14 +497,58 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 
 			NETLINK_CB(skb).dst_group = 1;
 			retval = netlink_broadcast_filtered(uevent_sock, skb,
-							    0, 1, GFP_KERNEL,
-							    kobj_bcast_filter,
-							    kobj);
+				0, 1, GFP_KERNEL,
+				kobj_bcast_filter,
+				kobj);
 			/* ENOBUFS should be handled in userspace */
 			if (retval == -ENOBUFS || retval == -ESRCH)
 				retval = 0;
 		} else
 			retval = -ENOMEM;
+	}
+
+	if (dst_nl_group) {
+		/* send netlink message */
+		list_for_each_entry(ue_sk, &uevent_sock_list, list) {
+			struct sock *uevent_sock = ue_sk->sk;
+			struct sk_buff *skb;
+			size_t len;
+
+			if (!netlink_has_listeners(uevent_sock, dst_nl_group))
+				continue;
+
+			/* allocate message with the maximum possible size */
+			len = strlen(action_string) + strlen(devpath) + 2;
+			skb = alloc_skb(len + env->buflen, GFP_KERNEL);
+			if (skb) {
+				char *scratch;
+
+				/* add header */
+				scratch = skb_put(skb, len);
+				sprintf(scratch, "%s@%s", action_string,
+					devpath);
+
+				/* copy keys to our continuous event payload
+				 * buffer
+				 */
+				for (i = 0; i < env->envp_idx; i++) {
+					len = strlen(env->envp[i]) + 1;
+					scratch = skb_put(skb, len);
+					strcpy(scratch, env->envp[i]);
+				}
+
+				NETLINK_CB(skb).dst_group = dst_nl_group;
+				retval = netlink_broadcast_filtered(
+					uevent_sock, skb,
+					0, dst_nl_group, GFP_KERNEL,
+					kobj_bcast_filter,
+					kobj);
+				/* ENOBUFS should be handled in userspace */
+				if (retval == -ENOBUFS || retval == -ESRCH)
+					retval = 0;
+			} else
+				retval = -ENOMEM;
+		}
 	}
 #endif
 	mutex_unlock(&uevent_sock_mutex);
