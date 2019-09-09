@@ -576,7 +576,6 @@ as_ioctl_ping_impl(struct goldfish_address_space_ping *ping_info,
 
 	// Convert to phys addrs
 	ping_info->offset += state->address_area_phys_address;
-	ping_info->wait_offset += state->address_area_phys_address;
 
 	mutex_lock(&state->registers_lock);
 	as_ping_impl(state, handle);

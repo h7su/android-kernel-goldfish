@@ -16,7 +16,8 @@ struct goldfish_address_space_ping {
 	__u64 offset;
 	__u64 size;
 	__u64 metadata;
-	__u64 wait_offset;
+	__u32 version;
+	__u32 wait_fd;
 	__u32 wait_flags;
 	__u32 direction;
 };
