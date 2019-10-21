@@ -663,7 +663,7 @@ as_ioctl_ping_impl(struct goldfish_address_space_ping *ping_info,
 	as_ping_impl(state, handle);
 	mutex_unlock(&state->registers_lock);
 
-	user_copy.metadata = ping_info->metadata;
+	memcpy(&user_copy, ping_info, sizeof(user_copy));
 	if (copy_to_user(ptr, &user_copy, sizeof(user_copy)))
 		return -EFAULT;
 
