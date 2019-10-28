@@ -1,0 +1,2 @@
+BRANCH=mirror-aosp-android-goldfish-4.14-dev
+KERNEL_DIR=goldfish
