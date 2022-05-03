@@ -347,12 +347,18 @@ static void gensym(char *dst)
             gensym_ctr++;
 }
 
-static int __must_check
-goldfish_sync_fence_create(struct goldfish_sync_timeline *tl, u32 val)
-{
-    char fence_name[256];
+struct fence_data {
 	struct sync_pt *pt;
-	struct sync_fence *sync_obj = NULL;
+	struct sync_file *sync_file_obj;
+	int fd;
+};
+
+static int __must_check
+goldfish_sync_fence_create(struct goldfish_sync_timeline *tl, u32 val,
+			   struct fence_data *fence)
+{
+	struct sync_pt *pt;
+	struct sync_file *sync_file_obj = NULL;
 	int fd;
 
 	pt = goldfish_sync_pt_create(tl, val);
@@ -363,20 +369,19 @@ goldfish_sync_fence_create(struct goldfish_sync_timeline *tl, u32 val)
 	if (fd < 0)
 		goto err_cleanup_pt;
 
-    gensym(fence_name);
+	sync_file_obj = sync_file_create(&pt->base);
+	if (!sync_file_obj)
+		goto err_cleanup_fd_pt;
 
-	sync_obj = sync_fence_create(fence_name, pt);
-    if (!sync_obj)
-    {
-        printk(KERN_ERR "Could not create sync fence!"
-               "sync_timeline=0x%p val=%d sync_pt=0x%p\n",
-               tl, val, pt);
-        goto err_cleanup_fd_pt;
-    }
+	fd_install(fd, sync_file_obj->file);
 
-    sync_fence_install(sync_obj, fd);
+	dma_fence_put(&pt->base);	/* sync_file_obj now owns the fence */
 
-	return fd;
+	fence->pt = pt;
+	fence->sync_file_obj = sync_file_obj;
+	fence->fd = fd;
+
+	return 0;
 
 err_cleanup_fd_pt:
 	put_unused_fd(fd);
@@ -384,6 +389,12 @@ err_cleanup_pt:
 	goldfish_sync_pt_destroy(pt);
 
 	return -1;
+}
+
+static void goldfish_sync_fence_destroy(const struct fence_data *fence)
+{
+	fput(fence->sync_file_obj->file);
+	goldfish_sync_pt_destroy(fence->pt);
 }
 
 static inline void
@@ -554,7 +565,7 @@ void goldfish_sync_run_hostcmd(struct goldfish_sync_state *sync_state,
 {
 	struct goldfish_sync_timeline *tl =
 		(struct goldfish_sync_timeline *)(uintptr_t)todo->handle;
-	int sync_fence_fd;
+	struct fence_data fence;
 
 	switch (todo->cmd) {
 	case CMD_SYNC_READY:
@@ -572,10 +583,12 @@ void goldfish_sync_run_hostcmd(struct goldfish_sync_state *sync_state,
 
 	case CMD_CREATE_SYNC_FENCE:
 		WARN_ON(!tl);
-		sync_fence_fd = goldfish_sync_fence_create(tl, todo->time_arg);
+		if (goldfish_sync_fence_create(tl, todo->time_arg, &fence)) {
+			fence.fd = -1;
+		}
 		goldfish_sync_hostcmd_reply(sync_state,
 					    CMD_CREATE_SYNC_FENCE,
-					    sync_fence_fd,
+					    fence.fd,
 					    0,
 					    todo->hostcmd_handle);
 		break;
@@ -654,7 +667,7 @@ goldfish_sync_ioctl_locked(struct goldfish_sync_timeline *tl,
 			   unsigned long arg)
 {
 	struct goldfish_sync_ioctl_info ioctl_data;
-	int fd_out = -1;
+	struct fence_data fence;
 
 	switch (cmd) {
 	case GOLDFISH_SYNC_IOC_QUEUE_WORK:
@@ -666,13 +679,14 @@ goldfish_sync_ioctl_locked(struct goldfish_sync_timeline *tl,
 		if (!ioctl_data.host_syncthread_handle_in)
 			return -EFAULT;
 
-		fd_out = goldfish_sync_fence_create(tl, tl->seqno + 1);
-		ioctl_data.fence_fd_out = fd_out;
+		if (goldfish_sync_fence_create(tl, tl->seqno + 1, &fence))
+			return -EAGAIN;
 
+		ioctl_data.fence_fd_out = fence.fd;
 		if (copy_to_user((void __user *)arg,
 				 &ioctl_data,
 				 sizeof(ioctl_data))) {
-			sys_close(fd_out);
+			goldfish_sync_fence_destroy(&fence);
 			return -EFAULT;
 		}
 
