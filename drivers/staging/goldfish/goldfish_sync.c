@@ -351,7 +351,7 @@ static void gensym(char *dst)
 
 struct fence_data {
 	struct sync_pt *pt;
-	struct sync_file *sync_file_obj;
+	struct sync_fence *sync_obj;
 	int fd;
 };
 
@@ -359,8 +359,9 @@ static int __must_check
 goldfish_sync_fence_create(struct goldfish_sync_timeline *tl, u32 val,
 			   struct fence_data *fence)
 {
+	char fence_name[256];
 	struct sync_pt *pt;
-	struct sync_file *sync_file_obj = NULL;
+	struct sync_fence *sync_obj = NULL;
 	int fd;
 
 	pt = goldfish_sync_pt_create(tl, val);
@@ -371,16 +372,15 @@ goldfish_sync_fence_create(struct goldfish_sync_timeline *tl, u32 val,
 	if (fd < 0)
 		goto err_cleanup_pt;
 
-	sync_file_obj = sync_file_create(&pt->base);
-	if (!sync_file_obj)
+	gensym(fence_name);
+	sync_obj = sync_fence_create(fence_name, pt);
+	if (!sync_obj)
 		goto err_cleanup_fd_pt;
 
-	fd_install(fd, sync_file_obj->file);
-
-	dma_fence_put(&pt->base);	/* sync_file_obj now owns the fence */
+	sync_fence_install(sync_obj, fd);
 
 	fence->pt = pt;
-	fence->sync_file_obj = sync_file_obj;
+	fence->sync_obj = sync_obj;
 	fence->fd = fd;
 
 	return 0;
@@ -395,7 +395,7 @@ err_cleanup_pt:
 
 static void goldfish_sync_fence_destroy(const struct fence_data *fence)
 {
-	fput(fence->sync_file_obj->file);
+	fput(fence->sync_obj->file);
 	goldfish_sync_pt_destroy(fence->pt);
 }
 
