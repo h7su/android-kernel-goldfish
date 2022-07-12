@@ -1,5 +1,5 @@
 ARCH=arm64
-BRANCH=arm64
+BRANCH=aarch64
 
 CLANG_TRIPLE=aarch64-linux-gnu-
 CROSS_COMPILE=aarch64-linux-androidkernel-
