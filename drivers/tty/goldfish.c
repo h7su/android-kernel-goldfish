@@ -27,6 +27,7 @@
 #include <linux/mm.h>
 #include <linux/dma-mapping.h>
 #include <linux/serial_core.h>
+#include <linux/of.h>
 
 enum {
 	/* Goldfish tty register's offsets */

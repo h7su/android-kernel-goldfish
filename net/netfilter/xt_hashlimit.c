@@ -668,8 +668,9 @@ static int hashlimit_mt_check(const struct xt_mtchk_param *par)
 
 	if (info->cfg.gc_interval == 0 || info->cfg.expire == 0)
 		return -EINVAL;
-	if (info->name[sizeof(info->name)-1] != '\0')
-		return -EINVAL;
+	ret = xt_check_proc_name(info->name, sizeof(info->name));
+	if (ret)
+		return ret;
 	if (par->family == NFPROTO_IPV4) {
 		if (info->cfg.srcmask > 32 || info->cfg.dstmask > 32)
 			return -EINVAL;
@@ -725,6 +726,7 @@ static struct xt_match hashlimit_mt_reg[] __read_mostly = {
 		.family         = NFPROTO_IPV4,
 		.match          = hashlimit_mt,
 		.matchsize      = sizeof(struct xt_hashlimit_mtinfo1),
+		.usersize	= offsetof(struct xt_hashlimit_mtinfo1, hinfo),
 		.checkentry     = hashlimit_mt_check,
 		.destroy        = hashlimit_mt_destroy,
 		.me             = THIS_MODULE,
@@ -736,6 +738,7 @@ static struct xt_match hashlimit_mt_reg[] __read_mostly = {
 		.family         = NFPROTO_IPV6,
 		.match          = hashlimit_mt,
 		.matchsize      = sizeof(struct xt_hashlimit_mtinfo1),
+		.usersize	= offsetof(struct xt_hashlimit_mtinfo1, hinfo),
 		.checkentry     = hashlimit_mt_check,
 		.destroy        = hashlimit_mt_destroy,
 		.me             = THIS_MODULE,

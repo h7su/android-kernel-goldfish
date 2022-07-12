@@ -486,7 +486,7 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 		goto nla_put_failure;
 
 	if (indev && entskb->dev &&
-	    entskb->mac_header != entskb->network_header) {
+	    skb_mac_header_was_set(entskb)) {
 		struct nfqnl_msg_packet_hw phw;
 		int len;
 
@@ -1106,6 +1106,9 @@ nfqnl_recv_unsupp(struct sock *ctnl, struct sk_buff *skb,
 static const struct nla_policy nfqa_cfg_policy[NFQA_CFG_MAX+1] = {
 	[NFQA_CFG_CMD]		= { .len = sizeof(struct nfqnl_msg_config_cmd) },
 	[NFQA_CFG_PARAMS]	= { .len = sizeof(struct nfqnl_msg_config_params) },
+	[NFQA_CFG_QUEUE_MAXLEN]	= { .type = NLA_U32 },
+	[NFQA_CFG_MASK]		= { .type = NLA_U32 },
+	[NFQA_CFG_FLAGS]	= { .type = NLA_U32 },
 };
 
 static const struct nf_queue_handler nfqh = {
