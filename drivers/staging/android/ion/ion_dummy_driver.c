@@ -103,6 +103,9 @@ static int __init ion_dummy_init(void)
 		if (heap_data->type == ION_HEAP_TYPE_CHUNK && !heap_data->base)
 			continue;
 
+		if (heap_data->type == ION_HEAP_TYPE_SYSTEM_CONTIG)
+			continue;
+
 		heaps[i] = ion_heap_create(heap_data);
 		if (IS_ERR_OR_NULL(heaps[i])) {
 			err = PTR_ERR(heaps[i]);
